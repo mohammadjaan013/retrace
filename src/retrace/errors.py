@@ -30,3 +30,18 @@ class SchemaVersionError(FixtureError):
 
 class CorpusError(RetraceError):
     """A corpus is inconsistent, or a lookup was made against the wrong one."""
+
+
+class LLMError(RetraceError):
+    """A language-model call failed in a way the caller should handle per item."""
+
+
+class LLMRefusalError(LLMError):
+    """The model declined the request (and any configured fallback declined too)."""
+
+
+class LLMOutputError(LLMError):
+    """The model answered, but not in a shape Retrace can use.
+
+    Covers truncation at max_tokens and output that is not the requested JSON.
+    """

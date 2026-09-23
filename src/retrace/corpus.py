@@ -8,7 +8,10 @@ used to prove the change helped.
 
 from __future__ import annotations
 
+import json
+import os
 from collections.abc import Iterable, Iterator
+from pathlib import Path
 
 from .errors import CorpusError
 from .types import Chunk, EvalCase, Span
@@ -192,3 +195,72 @@ def coverage_warning(k: int, corpus) -> str | None:
         "returning random chunks would score well. Use a larger corpus or a "
         "smaller k before quoting these numbers."
     )
+
+
+# --------------------------------------------------------------------------
+# Documents on disk
+# --------------------------------------------------------------------------
+
+
+def load_documents(path: str | os.PathLike[str]) -> dict[str, str]:
+    """Load a document collection as ``{doc_id: text}``.
+
+    Two formats, chosen by extension:
+
+    * ``.json``  -- a single object mapping doc id to text.
+    * ``.jsonl`` -- one ``{"id": ..., "text": ...}`` object per line, which is
+      what streams out of most ingestion pipelines and scales past memory-sized
+      JSON documents.
+
+    Text is returned exactly as stored. Gold spans are character offsets into
+    it, so this function must never normalise whitespace or line endings.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise CorpusError(f"document file not found: {path}")
+
+    if path.suffix == ".jsonl":
+        docs: dict[str, str] = {}
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            for lineno, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                    doc_id, text = record["id"], record["text"]
+                except (json.JSONDecodeError, KeyError, TypeError) as exc:
+                    raise CorpusError(
+                        f"{path}:{lineno}: expected {{\"id\": ..., \"text\": ...}}: {exc}"
+                    ) from exc
+                if doc_id in docs:
+                    raise CorpusError(f"{path}:{lineno}: duplicate document id {doc_id!r}")
+                docs[str(doc_id)] = str(text)
+        return docs
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise CorpusError(f"{path}: invalid JSON: {exc.msg}") from exc
+    if not isinstance(data, dict) or not all(isinstance(v, str) for v in data.values()):
+        raise CorpusError(f"{path}: expected a JSON object mapping document id to text")
+    return {str(k): v for k, v in data.items()}
+
+
+def build_corpus(
+    documents: dict[str, str],
+    chunker=None,
+) -> InMemoryCorpus:
+    """Chunk a document collection into an `InMemoryCorpus` that keeps the source text.
+
+    `chunker` is any ``fn(doc_id, text) -> list[Chunk]``; the default is the
+    naive fixed-width chunker.
+    """
+    if chunker is None:
+        from .chunking import fixed_size_chunks
+
+        chunker = fixed_size_chunks
+    corpus = InMemoryCorpus(documents=documents)
+    for doc_id, text in documents.items():
+        for chunk in chunker(doc_id, text):
+            corpus.add(chunk)
+    return corpus
