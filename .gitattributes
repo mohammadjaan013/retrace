@@ -1,0 +1,11 @@
+# Normalise to LF everywhere.
+#
+# Not cosmetic: gold labels are character offsets into source documents. A
+# corpus file checked out with CRLF on Windows and LF on Linux would shift every
+# span after the first line break, and the golden set would silently point at
+# the wrong text.
+* text=auto eol=lf
+
+*.jsonl text eol=lf
+*.json  text eol=lf
+*.pdf   binary

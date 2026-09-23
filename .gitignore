@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Corpora and generated artefacts are never committed.
+data/ntrs/
+data/cache/
+runs/
+*.report.html
+.env
