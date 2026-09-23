@@ -127,7 +127,7 @@ class CallableEmbedder:
 
 
 class SentenceTransformerEmbedder:
-    """Local embeddings via ``sentence-transformers`` (``retrace[dense]``).
+    """Local embeddings via ``sentence-transformers`` (``retrace-rag[dense]``).
 
     Imported lazily. The first use downloads the model weights from Hugging
     Face -- a few hundred megabytes for the default -- so it is never loaded
@@ -143,7 +143,7 @@ class SentenceTransformerEmbedder:
                 from sentence_transformers import SentenceTransformer
             except ImportError as exc:
                 raise ImportError(
-                    'SentenceTransformerEmbedder needs: pip install "retrace[dense]"'
+                    'SentenceTransformerEmbedder needs: pip install "retrace-rag[dense]"'
                 ) from exc
             model = SentenceTransformer(model_name)
         self._model = model
@@ -298,7 +298,7 @@ class Reranker(Protocol):
 
 
 class CrossEncoderReranker:
-    """A cross-encoder via ``sentence-transformers`` (``retrace[dense]``).
+    """A cross-encoder via ``sentence-transformers`` (``retrace-rag[dense]``).
 
     Imported lazily; the first use downloads model weights.
     """
@@ -310,7 +310,7 @@ class CrossEncoderReranker:
                 from sentence_transformers import CrossEncoder
             except ImportError as exc:
                 raise ImportError(
-                    'CrossEncoderReranker needs: pip install "retrace[dense]"'
+                    'CrossEncoderReranker needs: pip install "retrace-rag[dense]"'
                 ) from exc
             model = CrossEncoder(model_name)
         self._model = model

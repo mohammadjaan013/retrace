@@ -245,6 +245,22 @@ class TestRunCommand:
         assert data["verdicts"]["CORPUS_GAP"] == 2
         assert data["judge"] is None
 
+    @pytest.mark.parametrize(("rate", "code"), [("0.3", 3), ("0.5", 0)])
+    def test_max_failure_rate_gates_ci(self, tmp_path, capsys, rate, code):
+        # The demo fails 5 of 12 cases (42%).
+        result = main([
+            "run", "--demo", "--docs", str(SAMPLE / "documents.json"),
+            "--fixture", str(SAMPLE / "golden.jsonl"), "--chunk-size", "300", "--k", "5",
+            "--out", str(tmp_path / "r.json"), "--max-failure-rate", rate,
+        ])
+        assert result == code
+        captured = capsys.readouterr()
+        assert ("FAIL: failure rate 42%" in captured.err) == (code == 3)
+
+    def test_max_failure_rate_validates(self, tmp_path):
+        with pytest.raises(SystemExit):
+            main(["run", "--demo", "--fixture", "x", "--max-failure-rate", "1.5"])
+
     def test_demo_requires_docs(self, tmp_path, capsys):
         code = main(["run", "--demo", "--fixture", str(SAMPLE / "golden.jsonl"),
                      "--out", str(tmp_path / "r.json")])

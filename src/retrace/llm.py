@@ -9,7 +9,7 @@ so the core defines one small protocol and every provider lives behind it.
   OpenAI, Gemini or a local model through their own client plugs in with a
   three-line function instead of a new dependency.
 * `AnthropicLLM` -- the shipped adapter, built on the official ``anthropic``
-  SDK behind the ``retrace[anthropic]`` extra and imported lazily, so the core
+  SDK behind the ``retrace-rag[anthropic]`` extra and imported lazily, so the core
   install stays dependency-free.
 """
 
@@ -134,7 +134,7 @@ _FALLBACK_BETA = "server-side-fallback-2026-07-01"
 class AnthropicLLM:
     """`LLM` backed by the official Anthropic SDK.
 
-    Install with ``pip install "retrace[anthropic]"``. Credentials resolve the
+    Install with ``pip install "retrace-rag[anthropic]"``. Credentials resolve the
     way the SDK always resolves them (``ANTHROPIC_API_KEY`` and friends); pass
     `client` to inject a configured one.
 
@@ -161,7 +161,7 @@ class AnthropicLLM:
                 import anthropic
             except ImportError as exc:  # pragma: no cover - exercised manually
                 raise ImportError(
-                    'AnthropicLLM needs the Anthropic SDK: pip install "retrace[anthropic]"'
+                    'AnthropicLLM needs the Anthropic SDK: pip install "retrace-rag[anthropic]"'
                 ) from exc
             self.client = anthropic.Anthropic(max_retries=self.max_retries)
 

@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "retrace"
+name = "retrace-rag"
 version = "0.1.0.dev0"
 description = "Find out which stage of your RAG pipeline is actually broken."
 readme = "README.md"
@@ -21,7 +21,7 @@ classifiers = [
 ]
 
 # The core has NO required dependencies. This is deliberate and load-bearing:
-# `pip install retrace` must never drag in torch, a vector DB client, or an
+# `pip install retrace-rag` must never drag in torch, a vector DB client, or an
 # LLM SDK. Anything heavy lives behind an extra.
 dependencies = []
 

@@ -1,6 +1,6 @@
 """The deliberately naive baseline retriever.
 
-Zero dependencies, zero configuration, zero API keys -- `pip install retrace`
+Zero dependencies, zero configuration, zero API keys -- `pip install retrace-rag`
 and it runs. That matters for adoption: the quickstart must work before anybody
 has decided to trust the tool enough to wire in their own stack.
 

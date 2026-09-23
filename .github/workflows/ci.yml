@@ -1,0 +1,41 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: py${{ matrix.python }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: Lint
+        run: python -m ruff check .
+      - name: Test
+        run: python -m pytest --cov=retrace --cov-report=term
+      # The core promises zero runtime dependencies. Prove it on every push:
+      # a clean install with no extras must import and run the demo.
+      - name: Zero-dependency smoke test
+        shell: bash
+        run: |
+          python -m venv /tmp/bare
+          if [ -f /tmp/bare/bin/python ]; then PY=/tmp/bare/bin/python; else PY=/tmp/bare/Scripts/python; fi
+          $PY -m pip install --no-deps .
+          $PY -c "import retrace, sys; print('retrace', retrace.__version__)"
+          $PY -m retrace.cli run --demo --docs data/sample/documents.json \
+              --fixture data/sample/golden.jsonl --chunk-size 300 --k 5 --out /tmp/run.json

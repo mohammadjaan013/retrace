@@ -54,6 +54,20 @@ def load_object(spec: str) -> Any:
     return obj() if call else obj
 
 
+EXIT_THRESHOLD = 3
+"""Distinct from 2 (usage or runtime error) so CI can tell 'broken' from 'worse'."""
+
+
+def _parse_rate(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("expected a number between 0 and 1") from exc
+    if not 0.0 <= parsed <= 1.0:
+        raise argparse.ArgumentTypeError("expected a number between 0 and 1")
+    return parsed
+
+
 def _parse_overlap(value: str) -> float | None:
     if value.lower() in ("none", "off", "0"):
         return None
@@ -270,6 +284,15 @@ def cmd_run(args: argparse.Namespace) -> int:
         from .report import write_report
 
         print(f"report    -> {write_report(run, out.with_suffix('.html'))}")
+
+    if args.max_failure_rate is not None:
+        failures = sum(1 for a in run.attributions if a.is_failure)
+        rate = failures / len(run.attributions) if run.attributions else 0.0
+        if rate > args.max_failure_rate:
+            print(f"\nFAIL: failure rate {rate:.0%} exceeds --max-failure-rate "
+                  f"{args.max_failure_rate:.0%}", file=sys.stderr)
+            return EXIT_THRESHOLD
+        print(f"\npass: failure rate {rate:.0%} within {args.max_failure_rate:.0%}")
     return 0
 
 
@@ -341,6 +364,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", default="runs/run.json", help="run file to write")
     p.add_argument("--report", action="store_true",
                    help="also write a self-contained HTML report next to the run file")
+    p.add_argument("--max-failure-rate", type=_parse_rate, default=None, metavar="RATE",
+                   help="for CI: exit with status 3 if more than RATE (0-1) of cases fail")
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("report", help="render a saved run as a single-file HTML report")
