@@ -31,9 +31,9 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
-from .baseline import tokenize
 from .errors import LLMError
 from .llm import LLM, as_llm
+from .text import content_terms, term_set, tokenize
 from .types import Chunk, EvalCase, Provenance, Span, stable_id
 
 DEFAULT_MIN_CHUNK_CHARS = 200
@@ -87,17 +87,6 @@ Document: {doc_id}
 {text}
 </passage>"""
 
-_STOPWORDS = frozenset(
-    """
-    a an the and or but if of to in on at by for with from as is are was were be been
-    being it its this that these those what which who whom whose when where why how
-    do does did done can could should would will shall may might must has have had
-    not no nor so than then there their them they we you your our i me my he she his
-    her us into onto over under about above below between during through per via
-    any some each every all both either neither such same other own very too just
-    also only more most much many few less least one two
-    """.split()  # noqa: SIM905 - a word list reads better as prose
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,10 +220,10 @@ def lexical_overlap(question: str, evidence: str) -> float:
     1.0 means every content word was lifted from it. Stopwords are ignored,
     because "what is the" carries no retrieval signal either way.
     """
-    q_terms = {t for t in tokenize(question) if t not in _STOPWORDS and len(t) > 1}
+    q_terms = content_terms(question)
     if not q_terms:
         return 0.0
-    e_terms = set(tokenize(evidence))
+    e_terms = term_set(evidence)
     return len(q_terms & e_terms) / len(q_terms)
 
 

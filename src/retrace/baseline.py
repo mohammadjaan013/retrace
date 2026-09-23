@@ -22,18 +22,13 @@ the case study.
 from __future__ import annotations
 
 import math
-import re
 from collections import Counter
 from collections.abc import Iterable, Sequence
 
+from .text import tokenize
 from .types import Chunk
 
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
-
-
-def tokenize(text: str) -> list[str]:
-    """Lowercase, split on anything that is not a letter or digit. That is all."""
-    return _TOKEN_RE.findall(text.lower())
+__all__ = ["NaiveRetriever", "tokenize"]
 
 
 class NaiveRetriever:

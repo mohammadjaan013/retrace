@@ -191,6 +191,85 @@ def cmd_stats(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------
+# run
+# --------------------------------------------------------------------------
+
+
+def _resolve_target(args: argparse.Namespace) -> tuple[Any, Any]:
+    """Build (pipeline, corpus) from --demo / --pipeline / --corpus / --docs."""
+    from .chunking import fixed_size_chunks
+    from .corpus import build_corpus, load_documents
+
+    corpus = None
+    if args.docs:
+        documents = load_documents(args.docs)
+        corpus = build_corpus(
+            documents,
+            chunker=lambda d, t: fixed_size_chunks(d, t, size=args.chunk_size),
+        )
+
+    if args.demo:
+        if corpus is None:
+            raise RetraceError("--demo needs --docs: the naive baseline indexes those documents")
+        from .baseline import NaiveRetriever
+
+        return NaiveRetriever(corpus.iter_chunks()), corpus
+
+    if not args.pipeline:
+        raise RetraceError("pass --pipeline module:factory() or --demo")
+
+    target = load_object(args.pipeline)
+    pipeline = target
+    if isinstance(target, tuple) and len(target) == 2:
+        pipeline, factory_corpus = target
+        corpus = corpus if corpus is not None else factory_corpus
+    if args.corpus:
+        corpus = load_object(args.corpus)
+    return pipeline, corpus
+
+
+def _build_judge(args: argparse.Namespace):
+    if args.judge == "none":
+        return None
+    if args.judge == "llm":
+        from .judge import LLMJudge
+        from .llm import AnthropicLLM
+
+        return LLMJudge(AnthropicLLM(model=args.judge_model, effort="low"))
+    from .judge import TokenRecallJudge
+
+    return TokenRecallJudge()
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    from .fixtures import read_fixture
+    from .runner import evaluate, save_run
+    from .summary import print_summary
+
+    cases = read_fixture(args.fixture)
+    pipeline, corpus = _resolve_target(args)
+    judge = _build_judge(args)
+
+    interactive = sys.stdout.isatty()
+
+    def progress(i: int, n: int, attribution) -> None:
+        # A carriage-return progress line is noise in a CI log or a pipe.
+        if interactive:
+            print(f"\r  {i}/{n}  {attribution.verdict.value:<16}", end="", flush=True)
+
+    print(f"running {len(cases)} cases against {pipeline!r}")
+    run = evaluate(pipeline, cases, corpus=corpus, judge=judge, k=args.k, progress=progress)
+    run.meta.update({"fixture": str(args.fixture), "k": args.k})
+    if interactive:
+        print()
+
+    out = save_run(run, args.out)
+    print_summary(run)
+    print(f"\nrun saved -> {out}")
+    return 0
+
+
+# --------------------------------------------------------------------------
 # entry point
 # --------------------------------------------------------------------------
 
@@ -229,6 +308,24 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("stats", help="summarise one or more fixtures")
     p.add_argument("fixtures", nargs="+")
     p.set_defaults(func=cmd_stats)
+
+    p = sub.add_parser("run", help="attribute every failure in a golden set to a pipeline stage")
+    p.add_argument("--fixture", required=True, help="golden set (.jsonl)")
+    target = p.add_mutually_exclusive_group()
+    target.add_argument("--pipeline", help="'module:attr' or 'module:factory()' returning a "
+                                           "pipeline, a retriever, or (pipeline, corpus)")
+    target.add_argument("--demo", action="store_true",
+                        help="diagnose the built-in naive baseline over --docs")
+    p.add_argument("--docs", help="the indexed documents, enabling CORPUS_GAP detection")
+    p.add_argument("--corpus", help="'module:attr' resolving to a Corpus (overrides --docs)")
+    p.add_argument("--chunk-size", type=int, default=1200,
+                   help="chunk size used to index --docs (default 1200)")
+    p.add_argument("--k", type=int, default=10, help="top-k for retrieve-only pipelines")
+    p.add_argument("--judge", choices=["recall", "llm", "none"], default="recall",
+                   help="answer judge for GENERATION_MISS (default: free token-recall)")
+    p.add_argument("--judge-model", default="claude-opus-5")
+    p.add_argument("--out", default="runs/run.json", help="run file to write")
+    p.set_defaults(func=cmd_run)
 
     return parser
 
