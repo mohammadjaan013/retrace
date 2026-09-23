@@ -16,3 +16,6 @@ data/cache/
 runs/
 *.report.html
 .env
+
+# Local editor / preview config
+.claude/

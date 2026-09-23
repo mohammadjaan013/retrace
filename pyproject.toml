@@ -49,3 +49,7 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# Mostly inline CSS and HTML templates, which read worse wrapped at 100.
+"src/retrace/report.py" = ["E501"]

@@ -266,6 +266,20 @@ def cmd_run(args: argparse.Namespace) -> int:
     out = save_run(run, args.out)
     print_summary(run)
     print(f"\nrun saved -> {out}")
+    if args.report:
+        from .report import write_report
+
+        print(f"report    -> {write_report(run, out.with_suffix('.html'))}")
+    return 0
+
+
+def cmd_report(args: argparse.Namespace) -> int:
+    from .report import write_report
+    from .runner import load_run
+
+    run = load_run(args.run)
+    out = Path(args.out) if args.out else Path(args.run).with_suffix(".html")
+    print(f"report -> {write_report(run, out)}")
     return 0
 
 
@@ -325,7 +339,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="answer judge for GENERATION_MISS (default: free token-recall)")
     p.add_argument("--judge-model", default="claude-opus-5")
     p.add_argument("--out", default="runs/run.json", help="run file to write")
+    p.add_argument("--report", action="store_true",
+                   help="also write a self-contained HTML report next to the run file")
     p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("report", help="render a saved run as a single-file HTML report")
+    p.add_argument("run", help="run file written by `retrace run`")
+    p.add_argument("--out", help="HTML file to write (default: next to the run file)")
+    p.set_defaults(func=cmd_report)
 
     return parser
 
