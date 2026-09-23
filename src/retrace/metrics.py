@@ -26,9 +26,6 @@ from .types import Verdict
 
 STANDARD_KS: tuple[int, ...] = (1, 3, 5, 10, 20)
 
-VOCABULARY_MISMATCH_BELOW = 0.34
-"""A RETRIEVAL_MISS whose question shares less than a third of its content words
-with the gold evidence is a vocabulary mismatch: no lexical tuning reaches it."""
 
 
 @dataclass
@@ -52,7 +49,11 @@ class Metrics:
     lucky: int = 0
     errors: int = 0
     vocabulary_mismatch: int = 0
+    """Retrieval misses a reference keyword retriever also misses."""
+
     findable_but_missed: int = 0
+    """Retrieval misses a reference keyword retriever finds: the pipeline is
+    losing to plain keyword search."""
     latency_p50_ms: float | None = None
     latency_p95_ms: float | None = None
 
@@ -119,14 +120,9 @@ def compute_metrics(run: Any, *, trusted_only: bool = False) -> Metrics:
     decided = [a for a in evaluated if a.judgement.correct is not None]
 
     misses = [a for a in scored if a.verdict is Verdict.RETRIEVAL_MISS]
-    vocab = sum(
-        1 for a in misses
-        if a.query_gold_overlap is not None and a.query_gold_overlap < VOCABULARY_MISMATCH_BELOW
-    )
-    findable = sum(
-        1 for a in misses
-        if a.query_gold_overlap is not None and a.query_gold_overlap >= VOCABULARY_MISMATCH_BELOW
-    )
+    probed = [a for a in misses if a.lexical_probe_k is not None]
+    findable = sum(1 for a in probed if a.lexical_probe_rank is not None)
+    vocab = len(probed) - findable
 
     ids = {a.case_id for a in attributions}
     latencies = [
@@ -247,7 +243,8 @@ def fix_first(run: Any, *, trusted_only: bool = False, examples: int = 5) -> lis
             if metrics.vocabulary_mismatch:
                 parts.append(f"{metrics.vocabulary_mismatch} vocabulary mismatch")
             if metrics.findable_but_missed:
-                parts.append(f"{metrics.findable_but_missed} findable by keyword but missed")
+                parts.append(f"{metrics.findable_but_missed} found by a reference keyword "
+                             "retriever (losing to BM25)")
             detail = "; ".join(parts)
             if metrics.vocabulary_mismatch > metrics.findable_but_missed:
                 # Lead with the fix for the dominant sub-type: lexical tuning

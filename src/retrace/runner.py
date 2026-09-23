@@ -64,6 +64,21 @@ class RunResult:
         return {c.id: c for c in self.cases}
 
 
+class _LazyProbe:
+    """A reference BM25 over the corpus, built only if some case needs it."""
+
+    def __init__(self, corpus: Any) -> None:
+        self._corpus = corpus
+        self._retriever = None
+
+    def retrieve(self, query: str, k: int):
+        if self._retriever is None:
+            from .retrievers import BM25Retriever
+
+            self._retriever = BM25Retriever(self._corpus.iter_chunks())
+        return self._retriever.retrieve(query, k)
+
+
 def as_pipeline(obj: Any, k: int = 10):
     """Accept a Tier 2 pipeline, or lift a Tier 1 retriever into one."""
     if hasattr(obj, "run") and callable(obj.run):
@@ -80,6 +95,7 @@ def evaluate(
     k: int = 10,
     progress: Callable[[int, int, Attribution], None] | None = None,
     keep_traces: bool = True,
+    lexical_probe: bool = True,
 ) -> RunResult:
     """Attribute every case.
 
@@ -88,6 +104,10 @@ def evaluate(
     if the *first* cases all fail with the same exception, the problem is setup
     (bad key, wrong URL, index not built), and the run stops immediately rather
     than producing a report that is 100% UNSCORABLE.
+
+    With a corpus, every RETRIEVAL_MISS is re-asked of a reference BM25 over
+    that corpus (built once, on the first miss) to tell "losing to keyword
+    search" apart from "vocabulary mismatch". Disable with `lexical_probe=False`.
     """
     cases = list(cases)
     runner = as_pipeline(pipeline, k=k)
@@ -99,6 +119,7 @@ def evaluate(
     tiers: set[int] = set()
     leading_errors: list[type[BaseException]] = []  # only until the first success
     any_success = False
+    probe = _LazyProbe(corpus) if (corpus is not None and lexical_probe) else None
 
     for i, case in enumerate(cases, start=1):
         try:
@@ -119,7 +140,7 @@ def evaluate(
         else:
             any_success = True
             tiers.add(2 if result.exposes_ranking_stage else 1)
-            attribution = attribute(case, result, corpus=corpus, judge=judge)
+            attribution = attribute(case, result, corpus=corpus, judge=judge, probe=probe)
             if keep_traces:
                 traces[case.id] = result
 
@@ -191,7 +212,8 @@ def _attribution_to_dict(a: Attribution) -> dict[str, Any]:
         "candidate_rank": a.candidate_rank,
         "context_rank": a.context_rank,
         "gold_ranks": list(a.gold_ranks),
-        "query_gold_overlap": a.query_gold_overlap,
+        "lexical_probe_rank": a.lexical_probe_rank,
+        "lexical_probe_k": a.lexical_probe_k,
         "n_candidates": a.n_candidates,
         "n_context": a.n_context,
         "match_granularity": a.match_granularity,
@@ -223,7 +245,8 @@ def _attribution_from_dict(d: dict[str, Any]) -> Attribution:
         candidate_rank=d.get("candidate_rank"),
         context_rank=d.get("context_rank"),
         gold_ranks=tuple(d.get("gold_ranks", ())),
-        query_gold_overlap=d.get("query_gold_overlap"),
+        lexical_probe_rank=d.get("lexical_probe_rank"),
+        lexical_probe_k=d.get("lexical_probe_k"),
         n_candidates=d.get("n_candidates", 0),
         n_context=d.get("n_context", 0),
         match_granularity=d.get("match_granularity"),

@@ -70,10 +70,39 @@ class TestComputeMetrics:
         assert m.verdicts["CORPUS_GAP"] == 2
         assert m.errors == 0
 
-    def test_retrieval_miss_is_split_by_vocabulary(self, sample_run):
+    def test_every_baseline_miss_is_recoverable_by_keyword_search(self, sample_run):
+        """The Week 5 finding: the naive baseline loses to BM25 on all three.
+
+        An earlier word-overlap heuristic called two of these vocabulary
+        mismatches. The before/after experiment falsified it; the probe
+        measures the counterfactual directly.
+        """
         m = compute_metrics(sample_run)
-        assert m.vocabulary_mismatch == 2
-        assert m.findable_but_missed == 1  # trackers vs tracker: plural, not vocabulary
+        assert m.findable_but_missed == 3
+        assert m.vocabulary_mismatch == 0
+        ranks = {a.case_id: a.lexical_probe_rank for a in sample_run.attributions
+                 if a.verdict is Verdict.RETRIEVAL_MISS}
+        assert all(r is not None and r <= 5 for r in ranks.values())
+
+    def test_genuine_vocabulary_mismatch_is_missed_by_the_probe_too(self):
+        docs = {"d1": "Radiators reject heat to deep space as infrared.",
+                "d2": "Batteries store energy for eclipse periods."}
+        corpus = build_corpus(docs, chunker=lambda d, t: fixed_size_chunks(d, t, size=500))
+        case = EvalCase(id="q", question="How do you get rid of warmth?",
+                        gold_spans=(Span("d1", 0, 48),))
+        run = evaluate(lambda q, k: [], [case], corpus=corpus)
+        (a,) = run.attributions
+        assert a.verdict is Verdict.RETRIEVAL_MISS
+        assert a.lexical_probe_rank is None
+        assert compute_metrics(run).vocabulary_mismatch == 1
+        assert any("vocabulary mismatch" in n for n in a.notes)
+
+    def test_probe_can_be_disabled(self, sample_run):
+        docs = load_documents(SAMPLE / "documents.json")
+        corpus = build_corpus(docs, chunker=lambda d, t: fixed_size_chunks(d, t, size=300))
+        run = evaluate(NaiveRetriever(corpus.iter_chunks()), read_fixture(SAMPLE / "golden.jsonl"),
+                       corpus=corpus, k=5, lexical_probe=False)
+        assert all(a.lexical_probe_k is None for a in run.attributions)
 
     def test_ks_never_exceed_candidates_returned(self, sample_run):
         assert max(compute_metrics(sample_run).hit_rate) == 5
@@ -137,8 +166,9 @@ class TestFixFirst:
 
     def test_retrieval_advice_leads_with_the_dominant_subtype(self, sample_run):
         rec = fix_first(sample_run)[0]
-        assert "2 vocabulary mismatch" in rec.detail
-        assert rec.actions[0].startswith("For vocabulary mismatches")
+        assert "3 found by a reference keyword retriever" in rec.detail
+        # Losing to keyword search: lead with the lexical fixes, not embeddings.
+        assert rec.actions[0].startswith("Check chunking first")
 
     def test_detail_is_plain_ascii(self, sample_run):
         for rec in fix_first(sample_run):

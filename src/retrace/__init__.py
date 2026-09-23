@@ -10,7 +10,7 @@ __version__ = "0.1.0.dev0"
 
 from .attribution import Attribution, attribute
 from .baseline import NaiveRetriever, tokenize
-from .chunking import chunk_documents, fixed_size_chunks
+from .chunking import chunk_documents, fixed_size_chunks, sentence_chunks
 from .corpus import (
     InMemoryCorpus,
     build_corpus,
@@ -47,6 +47,13 @@ from .protocols import (
     RetrieverPipeline,
     as_retriever,
 )
+from .retrievers import (
+    BM25Retriever,
+    DenseRetriever,
+    EmbeddingCache,
+    HybridRetriever,
+    RerankingPipeline,
+)
 from .runner import RunAbortedError, RunResult, evaluate, load_run, save_run
 from .synthesis import Rejection, SynthesisResult, synthesize
 from .types import (
@@ -66,12 +73,16 @@ __all__ = [
     "AnswerJudge",
     "AnthropicLLM",
     "Attribution",
+    "BM25Retriever",
     "Chunk",
     "Corpus",
     "CorpusError",
+    "DenseRetriever",
+    "EmbeddingCache",
     "EvalCase",
     "FixtureError",
     "Generator",
+    "HybridRetriever",
     "InMemoryCorpus",
     "Judgement",
     "LLMError",
@@ -82,6 +93,7 @@ __all__ = [
     "Pipeline",
     "Provenance",
     "Rejection",
+    "RerankingPipeline",
     "RetraceError",
     "RetrievalResult",
     "Retriever",
@@ -113,6 +125,7 @@ __all__ = [
     "resolve_gold_chunks",
     "retrieval_coverage",
     "save_run",
+    "sentence_chunks",
     "stable_id",
     "synthesize",
     "tokenize",

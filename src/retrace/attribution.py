@@ -41,7 +41,6 @@ from typing import Any
 
 from .corpus import DEFAULT_MIN_OVERLAP_CHARS, resolve_gold_chunks
 from .judge import AnswerJudge, Judgement
-from .text import content_terms, term_set
 from .types import Chunk, EvalCase, RetrievalResult, Verdict
 
 # Granularity at which a retrieved chunk was matched to the gold evidence.
@@ -72,13 +71,23 @@ class Attribution:
     gold_ranks: tuple[int, ...] = ()
     """1-based candidate ranks of *every* gold chunk -- what precision@k is computed from."""
 
-    query_gold_overlap: float | None = None
-    """Share of the question's content words found in the gold evidence text.
+    lexical_probe_rank: int | None = None
+    """On a RETRIEVAL_MISS: where a reference BM25 over the corpus ranks the gold
+    evidence for the same question, or None if it misses too.
 
-    Separates the two kinds of RETRIEVAL_MISS that need opposite fixes: a low
-    value is a vocabulary mismatch (dense retrieval, query rewriting); a high
-    value means the words were there and retrieval still missed (chunking,
-    ranking function). None when the evidence text is unavailable."""
+    Separates the two kinds of RETRIEVAL_MISS that need opposite fixes. Found
+    by the probe: the pipeline is losing to plain keyword search, so fix the
+    lexical side (IDF, stopwords, chunking, hybrid). Missed by the probe too: a
+    vocabulary mismatch no keyword tuning reaches -- dense retrieval or query
+    rewriting.
+
+    This replaced an earlier word-overlap heuristic that the Week 5 before/after
+    experiment falsified: it labelled "What determines how large a radiator
+    needs to be?" a vocabulary mismatch because only one of four content words
+    matched -- but that word was "radiator", and BM25 found it at rank 2. The
+    probe measures the counterfactual instead of guessing at it."""
+
+    lexical_probe_k: int | None = None
 
     n_candidates: int = 0
     n_context: int = 0
@@ -258,8 +267,14 @@ def attribute(
     *,
     corpus: Any = None,
     judge: AnswerJudge | None = None,
+    probe: Any = None,
 ) -> Attribution:
-    """Run the cascade for one case and explain the verdict."""
+    """Run the cascade for one case and explain the verdict.
+
+    `probe` is an optional reference retriever over the same corpus (normally
+    BM25). On a RETRIEVAL_MISS it is asked the same question, which turns
+    "why was this missed?" from a guess into a measured counterfactual.
+    """
     ctx = _Context(
         case=case,
         result=result,
@@ -292,6 +307,21 @@ def attribute(
     if ctx.granularity == DOCUMENT:
         ctx.notes.append("matched at document granularity: the pipeline exposes no chunk spans")
 
+    probe_rank = probe_k = None
+    if verdict is Verdict.RETRIEVAL_MISS and probe is not None:
+        probe_k = max(1, len(result.candidates))
+        probe_rank, _ = _first_gold(probe.retrieve(case.question, probe_k), ctx.is_gold)
+        if probe_rank is not None:
+            ctx.notes.append(
+                f"a reference keyword retriever finds this evidence at rank {probe_rank} of "
+                f"{probe_k}: the pipeline is losing to plain keyword search"
+            )
+        else:
+            ctx.notes.append(
+                f"a reference keyword retriever misses it too (top {probe_k}): a vocabulary "
+                "mismatch that dense retrieval or query rewriting has to bridge"
+            )
+
     return Attribution(
         case_id=case.id,
         verdict=verdict,
@@ -301,7 +331,8 @@ def attribute(
         candidate_rank=ctx.candidate_rank,
         context_rank=ctx.context_rank,
         gold_ranks=gold_ranks,
-        query_gold_overlap=_query_gold_overlap(case, corpus),
+        lexical_probe_rank=probe_rank,
+        lexical_probe_k=probe_k,
         n_candidates=len(result.candidates),
         n_context=len(result.context),
         match_granularity=ctx.granularity,
@@ -333,23 +364,6 @@ def _answered_anyway(ctx: _Context) -> bool:
         )
         return True
     return False
-
-
-def _query_gold_overlap(case: EvalCase, corpus: Any) -> float | None:
-    if corpus is None or not case.gold_spans:
-        return None
-    pieces = []
-    for span in case.gold_spans:
-        text = corpus.document_text(span.doc_id)
-        if text is not None:
-            pieces.append(text[span.start : span.end])
-    if not pieces:
-        return None
-    question_terms = content_terms(case.question)
-    if not question_terms:
-        return None
-    evidence_terms = term_set(" ".join(pieces))
-    return round(len(question_terms & evidence_terms) / len(question_terms), 3)
 
 
 def error_attribution(case: EvalCase, exc: BaseException) -> Attribution:

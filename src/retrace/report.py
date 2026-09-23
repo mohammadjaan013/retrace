@@ -439,10 +439,14 @@ def _case(case: EvalCase, a: Attribution, trace: RetrievalResult | None) -> str:
         if a.context_rank is not None:
             where += f", context position {a.context_rank} of {a.n_context}"
         rows.append(("Gold found at", e(where)))
-    if a.query_gold_overlap is not None and a.verdict is Verdict.RETRIEVAL_MISS:
-        kind = "vocabulary mismatch" if a.query_gold_overlap < 0.34 else "findable by keyword"
-        rows.append(("Word overlap", e(f"{a.query_gold_overlap:.0%} of question terms in the "
-                                        f"evidence ({kind})")))
+    if a.lexical_probe_k is not None:
+        if a.lexical_probe_rank is not None:
+            probe = (f"found at rank {a.lexical_probe_rank} of {a.lexical_probe_k} by a reference "
+                     "keyword retriever -- this pipeline is losing to plain BM25")
+        else:
+            probe = (f"missed by a reference keyword retriever too (top {a.lexical_probe_k}) -- "
+                     "a vocabulary mismatch")
+        rows.append(("Keyword probe", e(probe)))
     gold_desc = ", ".join(f"{s.doc_id} [{s.start}:{s.end}]" for s in case.gold_spans) or ", ".join(
         case.gold_doc_ids)
     rows.append(("Gold evidence", f'<span class="mono">{e(gold_desc)}</span>'))

@@ -10,6 +10,7 @@ Better strategies arrive in Week 5, once there are numbers to beat.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 
 from .types import Chunk, Span, stable_id
@@ -88,3 +89,87 @@ def chunk_documents(
     for doc_id, text in documents.items():
         out.extend(fixed_size_chunks(doc_id, text, size=size, overlap=overlap))
     return out
+
+
+# --------------------------------------------------------------------------
+# Structure-aware chunking (Week 5)
+# --------------------------------------------------------------------------
+
+_PARAGRAPH_RE = re.compile(r"\n[ \t]*\n+")
+# A sentence ends at . ! or ? followed by whitespace and something that can
+# start a sentence. Deliberately simple: abbreviations ("e.g. the") will
+# occasionally split early, which costs a slightly short chunk, never lost text.
+_SENTENCE_RE = re.compile(r"(?<=[.!?])[\"')\]]*\s+(?=[A-Z0-9\"'(\[])")
+
+
+def _sentences(text: str, base: int) -> list[tuple[int, int]]:
+    """(start, end) offsets of sentences in `text`, shifted by `base`."""
+    out: list[tuple[int, int]] = []
+    pos = 0
+    for match in _SENTENCE_RE.finditer(text):
+        end = match.start()
+        if text[pos:end].strip():
+            out.append((base + pos, base + end))
+        pos = match.end()
+    if text[pos:].strip():
+        out.append((base + pos, base + len(text.rstrip())))
+    return out
+
+
+def sentence_chunks(
+    doc_id: str,
+    text: str,
+    *,
+    max_chars: int = 600,
+    overlap_sentences: int = 1,
+) -> list[Chunk]:
+    """Pack whole sentences into chunks, never crossing a paragraph break.
+
+    The fix for the fixed-width chunker's worst habit -- cutting an answer in
+    half at an arbitrary character. Sentences are never split (a single
+    sentence longer than `max_chars` becomes its own chunk), paragraphs are
+    hard boundaries, and the last `overlap_sentences` of each chunk are
+    repeated at the start of the next, so an answer that spans a boundary is
+    still whole in at least one chunk.
+
+    Spans are exact offsets into `text`, so gold labels stay valid.
+    """
+    if max_chars < 1:
+        raise ValueError(f"max_chars must be >= 1, got {max_chars}")
+    if overlap_sentences < 0:
+        raise ValueError(f"overlap_sentences must be >= 0, got {overlap_sentences}")
+
+    chunks: list[Chunk] = []
+    index = 0
+    para_start = 0
+    boundaries = [m.span() for m in _PARAGRAPH_RE.finditer(text)] + [(len(text), len(text))]
+
+    for para_end, next_start in boundaries:
+        paragraph = text[para_start:para_end]
+        sentences = _sentences(paragraph, para_start)
+        para_start = next_start
+        i = 0
+        while i < len(sentences):
+            j = i
+            while j + 1 < len(sentences) and sentences[j + 1][1] - sentences[i][0] <= max_chars:
+                j += 1
+            start, end = sentences[i][0], sentences[j][1]
+            chunks.append(Chunk(
+                id=stable_id(doc_id, "s", str(start), str(end), prefix="c_"),
+                doc_id=doc_id,
+                text=text[start:end],
+                span=Span(doc_id=doc_id, start=start, end=end),
+                meta={"chunk_index": index, "strategy": "sentence"},
+            ))
+            index += 1
+            if j + 1 >= len(sentences):
+                break
+            # Step forward, keeping up to `overlap_sentences` for context. The
+            # overlap is dropped when the next sentence is too long to fit after
+            # it: that chunk would add nothing new, only a duplicate that
+            # competes with its parent in retrieval.
+            nxt = max(i + 1, j + 1 - overlap_sentences)
+            if nxt <= j and sentences[j + 1][1] - sentences[nxt][0] > max_chars:
+                nxt = j + 1
+            i = nxt
+    return chunks
