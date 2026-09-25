@@ -141,6 +141,20 @@ Reference implementations of the fixes the verdicts point at. They are exact, in
 - `RerankingPipeline` + `CrossEncoderReranker`: a Tier 2 pipeline.
 - `sentence_chunks`: whole sentences, paragraph-bounded, with overlap.
 
+## Demo corpus: 200 NASA technical reports
+
+A real corpus for testing: 200 reports from the [NASA Technical Reports Server](https://ntrs.nasa.gov), 40 each on thermal control, power, attitude control, electric propulsion and deep-space communications, published 1962–2026. The document text isn't committed. `data/ntrs-manifest.json` pins every document by ID and hash, so anyone can rebuild the identical corpus:
+
+```bash
+python scripts/ntrs.py fetch      # ~10.7 MB, standard library only, rate-limited
+```
+
+- **Only reports NASA marks as public-use-permitted.** Being hosted on a NASA server isn't the same as being free to reuse; 18 otherwise-matching reports were excluded on that basis.
+- **NASA's own extracted text, not the PDFs.** Gold labels are character offsets. Extracting PDFs locally would make the text depend on the PDF library version and silently shift every offset on another machine.
+- **Raw bytes and prepared text are both hash-pinned.** 15 of the 200 files came back as XHTML rather than plain text, so a deterministic conversion runs first, and every offset refers to its output.
+
+It's realistically messy: OCR noise, tables broken one word per line, and sixty years of formatting drift. It also showed `sentence_chunks` a problem the toy corpus couldn't. In PDF-extracted text, 91% of blank lines are line wraps, not paragraph breaks. Treating them as boundaries produced 259,743 chunks with a median length of 7 characters. The chunker now detects this per document.
+
 ## In CI
 
 ```bash

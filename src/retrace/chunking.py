@@ -116,21 +116,84 @@ def _sentences(text: str, base: int) -> list[tuple[int, int]]:
     return out
 
 
+_ENDS_SENTENCE = frozenset(".!?:")
+PARAGRAPH_MODES = ("auto", "blank_lines", "ignore")
+
+
+def blank_lines_are_paragraphs(text: str) -> bool:
+    """Do blank lines in this document mark paragraphs, or are they line wraps?
+
+    In prose written for the screen, a blank line ends a paragraph, so it sits
+    after sentence-ending punctuation. In text extracted from PDFs it is often
+    just a wrapped line: across the 200-document NASA corpus, 91% of blank lines
+    fell mid-sentence. Treating those as paragraph breaks shredded that corpus
+    into 259,743 chunks with a median length of seven characters.
+
+    So: blank lines count as paragraph breaks only when most of them follow
+    sentence-ending punctuation. A document with no blank lines is unaffected.
+    """
+    matches = list(_PARAGRAPH_RE.finditer(text))
+    if not matches:
+        return True
+    after_sentence = 0
+    for m in matches:
+        prev = text[: m.start()].rstrip()[-1:]
+        if prev in _ENDS_SENTENCE:
+            after_sentence += 1
+    return after_sentence / len(matches) >= 0.5
+
+
+def _split_oversized(
+    sentences: list[tuple[int, int]], text: str, max_chars: int
+) -> list[tuple[int, int]]:
+    """Break any "sentence" longer than `max_chars` at whitespace.
+
+    Real documents contain long runs with no sentence punctuation -- tables,
+    code, reference lists, headers. Without this cap each becomes one unbounded
+    chunk. Pieces end at the last whitespace inside the limit, or at the limit
+    itself when a run has no whitespace at all.
+    """
+    out: list[tuple[int, int]] = []
+    for start, end in sentences:
+        pos = start
+        while end - pos > max_chars:
+            window = text[pos : pos + max_chars]
+            cut = max(window.rfind(" "), window.rfind("\n"), window.rfind("\t"))
+            if cut <= 0:
+                cut = max_chars
+            piece_end = pos + cut
+            while piece_end > pos and text[piece_end - 1].isspace():
+                piece_end -= 1
+            if piece_end > pos:
+                out.append((pos, piece_end))
+            pos += cut
+            while pos < end and text[pos].isspace():
+                pos += 1
+        if pos < end:
+            out.append((pos, end))
+    return out
+
+
 def sentence_chunks(
     doc_id: str,
     text: str,
     *,
     max_chars: int = 600,
     overlap_sentences: int = 1,
+    paragraphs: str = "auto",
 ) -> list[Chunk]:
-    """Pack whole sentences into chunks, never crossing a paragraph break.
+    """Pack whole sentences into chunks of at most `max_chars`.
 
     The fix for the fixed-width chunker's worst habit -- cutting an answer in
-    half at an arbitrary character. Sentences are never split (a single
-    sentence longer than `max_chars` becomes its own chunk), paragraphs are
-    hard boundaries, and the last `overlap_sentences` of each chunk are
-    repeated at the start of the next, so an answer that spans a boundary is
-    still whole in at least one chunk.
+    half at an arbitrary character. Sentences are kept whole unless a single
+    one exceeds `max_chars` (then it is split at whitespace), and the last
+    `overlap_sentences` of each chunk are repeated at the start of the next, so
+    an answer that spans a boundary is still whole in at least one chunk.
+
+    `paragraphs` decides whether blank lines are hard boundaries:
+    ``"blank_lines"`` always, ``"ignore"`` never, and ``"auto"`` (default) per
+    document via `blank_lines_are_paragraphs` -- because in PDF-extracted text
+    most blank lines are line wraps, not paragraphs.
 
     Spans are exact offsets into `text`, so gold labels stay valid.
     """
@@ -138,15 +201,23 @@ def sentence_chunks(
         raise ValueError(f"max_chars must be >= 1, got {max_chars}")
     if overlap_sentences < 0:
         raise ValueError(f"overlap_sentences must be >= 0, got {overlap_sentences}")
+    if paragraphs not in PARAGRAPH_MODES:
+        raise ValueError(f"paragraphs must be one of {PARAGRAPH_MODES}, got {paragraphs!r}")
+
+    honour = (
+        paragraphs == "blank_lines"
+        or (paragraphs == "auto" and blank_lines_are_paragraphs(text))
+    )
+    boundaries = [m.span() for m in _PARAGRAPH_RE.finditer(text)] if honour else []
+    boundaries.append((len(text), len(text)))
 
     chunks: list[Chunk] = []
     index = 0
     para_start = 0
-    boundaries = [m.span() for m in _PARAGRAPH_RE.finditer(text)] + [(len(text), len(text))]
 
     for para_end, next_start in boundaries:
         paragraph = text[para_start:para_end]
-        sentences = _sentences(paragraph, para_start)
+        sentences = _split_oversized(_sentences(paragraph, para_start), text, max_chars)
         para_start = next_start
         i = 0
         while i < len(sentences):

@@ -212,9 +212,53 @@ class TestSentenceChunks:
         for c in sentence_chunks("d", self.TEXT, max_chars=1000):
             assert "\n\n" not in c.text
 
-    def test_never_splits_a_sentence(self):
-        for c in sentence_chunks("d", self.TEXT, max_chars=10):
+    def test_keeps_sentences_whole_when_they_fit(self):
+        for c in sentence_chunks("d", self.TEXT, max_chars=50):
             assert c.text.rstrip().endswith((".", "!", "?"))
+
+    def test_splits_an_oversized_sentence_at_whitespace(self):
+        # A table or code block has no sentence punctuation. Without a cap it
+        # would become one unbounded chunk.
+        table = "Beckman DK-2A Integrating Sphere Reflectance Soft Anodized 1199 Aluminum " * 8
+        chunks = sentence_chunks("d", table, max_chars=100)
+        assert len(chunks) > 1
+        assert all(len(c.text) <= 100 for c in chunks)
+        assert all(not c.text[-1].isspace() and not c.text[0].isspace() for c in chunks)
+        # Nothing is lost: every non-space character is covered by some chunk.
+        covered = set()
+        for c in chunks:
+            covered.update(range(c.span.start, c.span.end))
+        assert all(i in covered for i, ch in enumerate(table) if not ch.isspace())
+
+    def test_splits_a_run_with_no_whitespace(self):
+        chunks = sentence_chunks("d", "x" * 250, max_chars=100)
+        assert [len(c.text) for c in chunks] == [100, 100, 50]
+
+    PDF_WRAPPED = (
+        "Radiator area is almost always sized by the\n\nworst-case hot condition "
+        "rather than the\n\naverage, because surviving the hottest\n\nattitude "
+        "covers the cold case. Heater power is\n\ncomparatively cheap."
+    )
+
+    def test_detects_pdf_line_wraps(self):
+        from retrace.chunking import blank_lines_are_paragraphs
+
+        assert not blank_lines_are_paragraphs(self.PDF_WRAPPED)
+        assert blank_lines_are_paragraphs(self.TEXT)
+        assert blank_lines_are_paragraphs("no blank lines at all")
+
+    def test_auto_mode_does_not_shred_wrapped_text(self):
+        auto = sentence_chunks("d", self.PDF_WRAPPED, max_chars=500)
+        strict = sentence_chunks("d", self.PDF_WRAPPED, max_chars=500, paragraphs="blank_lines")
+        assert len(auto) == 1
+        assert len(strict) == 5  # every wrapped line becomes its own "paragraph"
+        assert "worst-case hot condition" in auto[0].text
+
+    def test_explicit_modes(self):
+        assert len(sentence_chunks("d", self.TEXT, max_chars=1000, paragraphs="ignore")) == 1
+        assert len(sentence_chunks("d", self.TEXT, max_chars=1000, paragraphs="blank_lines")) == 2
+        with pytest.raises(ValueError, match="paragraphs"):
+            sentence_chunks("d", self.TEXT, paragraphs="sometimes")
 
     def test_overlap_repeats_the_last_sentence(self):
         chunks = sentence_chunks("d", self.TEXT, max_chars=50, overlap_sentences=1)
