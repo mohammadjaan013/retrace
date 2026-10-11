@@ -246,10 +246,11 @@ class LabelSession:
         w("\n" + "-" * 72 + "\n")
         overlap = case.labels.get("lexical_overlap")
         meta = f"  overlap {overlap:.0%}" if isinstance(overlap, (int, float)) else ""
-        if case.labels.get("evidence_match") == "fuzzy":
-            # The highlight shows the source text; the model's quote differed by
-            # a few characters (usually an OCR correction). Worth a glance.
-            meta += f"  fuzzy evidence {case.labels.get('evidence_similarity', 0):.0%}"
+        match = case.labels.get("evidence_match")
+        if match in ("fuzzy", "gapped"):
+            # The highlight shows the source text; the model's quote differed --
+            # an OCR correction (fuzzy) or a page footer it skipped (gapped).
+            meta += f"  {match} evidence {case.labels.get('evidence_similarity', 0):.0%}"
         doc = next(iter(case.implied_doc_ids), "?")
         w(f"[{position}/{total}]  {doc}{meta}\n\n")
         w(f"Q: {case.question}\n")

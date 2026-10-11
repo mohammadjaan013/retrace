@@ -359,9 +359,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--chunk-size", type=int, default=1200, help="passage size in characters")
     p.add_argument("--chunk-overlap", type=int, default=0)
     p.add_argument("--min-chunk-chars", type=int, default=200)
-    p.add_argument("--max-overlap", type=_parse_overlap, default=0.8,
+    p.add_argument("--max-overlap", type=_parse_overlap, default=0.9,
                    help="reject questions copying more than this fraction of their "
-                        "content words from the evidence (default 0.8; 'none' disables)")
+                        "content words from their passage (default 0.9; 'none' disables)")
     _add_llm_args(p)
     p.add_argument("--llm", help="use your own model instead: 'module:attr' resolving to an LLM "
                                  "or a callable (system, prompt, schema) -> dict")

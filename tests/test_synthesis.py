@@ -107,6 +107,36 @@ class TestMatchEvidence:
 
         assert match_evidence(OCR_PASSAGE, "metallic sphere") is None
 
+    FOOTER_PASSAGE = (
+        "Comparing the results, the limiting link is\n\nNASA/TM—2019-220203\n\n12\n\n"
+        "the DSG to the lunar surface. Therefore the design is driven by it."
+    )
+
+    def test_skips_a_page_footer_inside_the_sentence(self):
+        """The real NASA case: footer and page number interrupt the quoted sentence."""
+        from retrace.synthesis import match_evidence
+
+        quote = "the limiting link is\n\nthe DSG to the lunar surface."
+        m = match_evidence(self.FOOTER_PASSAGE, quote)
+        assert m is not None and m.kind == "gapped"
+        found = self.FOOTER_PASSAGE[m.start:m.end]
+        assert found.startswith("the limiting link is")
+        assert found.endswith("lunar surface.")
+        assert "NASA/TM" in found  # the span covers the footer; evidence stays inside it
+
+    def test_gap_must_be_short(self):
+        from retrace.synthesis import match_evidence
+
+        long_gap = "the limiting link is " + "x" * 200 + " the DSG to the lunar surface."
+        assert match_evidence(long_gap, "the limiting link is the DSG to the lunar surface.") is None
+
+    def test_gap_pieces_must_be_substantial(self):
+        from retrace.synthesis import _match_with_gap
+
+        # "the DSG" alone is too short to anchor a piece.
+        assert _match_with_gap("the dsg | footer | to the lunar surface.",
+                               "the dsg to the lunar surface.") is None
+
     def test_strict_locate_evidence_is_unchanged(self):
         assert locate_evidence(OCR_PASSAGE, "a small metallic sphere at the end") is None
 

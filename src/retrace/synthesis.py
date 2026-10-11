@@ -37,7 +37,13 @@ from .text import content_terms, term_set, tokenize
 from .types import Chunk, EvalCase, Provenance, Span, stable_id
 
 DEFAULT_MIN_CHUNK_CHARS = 200
-DEFAULT_MAX_OVERLAP = 0.8
+DEFAULT_MAX_OVERLAP = 0.9
+"""Questions sharing more than this share of content words with their passage are
+rejected. Was 0.8 until the first full run on the NASA corpus: 18 of 24 rejections
+sat at 83-93% and read as legitimate questions -- in technical text, names and
+terms with no synonyms ("Goldstone", "DTN", "Orion's unregulated bus") are
+unavoidable shared vocabulary, not copied phrasing. The near-verbatim copies all
+scored 100%. Every candidate keeps its overlap score for review either way."""
 
 QUESTION_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -265,7 +271,7 @@ class EvidenceMatch:
     start: int
     end: int
     kind: str
-    """exact | normalised (whitespace/case only) | fuzzy (OCR-tolerant)."""
+    """exact | normalised (whitespace/case) | gapped (page footer removed) | fuzzy (OCR)."""
 
     similarity: float = 1.0
 
@@ -286,6 +292,41 @@ def _normalise_with_origin(text: str) -> tuple[str, list[int]]:
             origin.append(i)
             in_space = False
     return "".join(chars), origin
+
+
+GAP_MAX_CHARS = 80
+GAP_MIN_PIECE = 15
+
+
+def _match_with_gap(passage: str, quote: str) -> tuple[int, int] | None:
+    """Match `quote` as two exact pieces with one short interruption between them.
+
+    Found on the NASA corpus: the source read "the limiting link is
+    NASA/TM-2019-220203 12 the DSG to the lunar surface." -- a running page
+    footer and page number inside the sentence. The model quoted the sentence
+    as a person reads it, footer removed. Page boundaries interrupt sentences on
+    every page of every PDF, so this is common in real corpora.
+
+    Both pieces must match exactly (after whitespace/case normalisation), split
+    at a word boundary, each at least `GAP_MIN_PIECE` characters, with at most
+    `GAP_MAX_CHARS` of inserted text between them. Returns normalised-text
+    offsets covering both pieces and the gap.
+    """
+    if len(quote) < 2 * GAP_MIN_PIECE:
+        return None
+    for k in (i for i, ch in enumerate(quote) if ch == " "):
+        left, right = quote[:k], quote[k + 1:]
+        if len(left) < GAP_MIN_PIECE or len(right) < GAP_MIN_PIECE:
+            continue
+        start = passage.find(left)
+        while start >= 0:
+            after = start + len(left)
+            window = passage[after: after + GAP_MAX_CHARS + len(right) + 2]
+            r = window.find(right)
+            if r > 0:  # r == 0 would have been a plain normalised match
+                return start, after + r + len(right)
+            start = passage.find(left, start + 1)
+    return None
 
 
 def match_evidence(
@@ -321,6 +362,12 @@ def match_evidence(
     pos = norm_passage.find(norm_quote)
     if pos >= 0:
         return EvidenceMatch(origin[pos], origin[pos + len(norm_quote) - 1] + 1, "normalised")
+
+    gapped = _match_with_gap(norm_passage, norm_quote)
+    if gapped is not None:
+        lo, hi = gapped
+        return EvidenceMatch(origin[lo], origin[hi - 1] + 1, "gapped",
+                             round(len(norm_quote) / (hi - lo), 3))
 
     if len(norm_quote) < FUZZY_MIN_CHARS:
         return None
@@ -460,8 +507,8 @@ def _to_case(
         "synthesized_by": model_name,
         "lexical_overlap": round(overlap, 3),
     }
-    if located.kind == "fuzzy":
-        labels["evidence_match"] = "fuzzy"
+    if located.kind in ("fuzzy", "gapped"):
+        labels["evidence_match"] = located.kind
         labels["evidence_similarity"] = located.similarity
 
     if chunk.span is not None:
