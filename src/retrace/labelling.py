@@ -251,6 +251,8 @@ class LabelSession:
             # The highlight shows the source text; the model's quote differed --
             # an OCR correction (fuzzy) or a page footer it skipped (gapped).
             meta += f"  {match} evidence {case.labels.get('evidence_similarity', 0):.0%}"
+        if case.labels.get("answer_in_question"):
+            meta += "  ! answer appears in the question"
         doc = next(iter(case.implied_doc_ids), "?")
         w(f"[{position}/{total}]  {doc}{meta}\n\n")
         w(f"Q: {case.question}\n")

@@ -401,6 +401,52 @@ def match_evidence(
     return EvidenceMatch(origin[lo], origin[hi - 1] + 1, "fuzzy", round(ratio, 3))
 
 
+_CONTEXT_DEPENDENT = re.compile(
+    r"\b(?:in|from|by|according to|per)\s+(?:the|this)\s+(?:passage|text|document|paper|"
+    r"report|excerpt|section|table|figure|specifications?|memorandum|experiment|above)\b"
+    r"|\b(?:mentioned|described|discussed|listed|shown|given|stated|referred to|highlighted)"
+    r"\s+(?:in|above|here|earlier)\b"
+    r"|\bthe (?:passage|excerpt)\b"
+    r"|^\s*(?:which|what)\s+(?:figure|table|section|chapter|page|appendix)"
+    r"(?:\s+(?:number|caption|title))?\s+(?:shows|illustrates|corresponds|contains|depicts|"
+    r"lists|presents|describes|mentions|gives|summari[sz]es)\b",
+    re.IGNORECASE,
+)
+
+
+def is_context_dependent(question: str) -> bool:
+    """Does the question only make sense to someone holding the passage?
+
+    "What is the operating rate of the green laser mentioned in the passage?"
+    cannot be asked by a real user -- which green laser? -- and is ambiguous
+    as a retrieval test. Questions about document layout ("Which figure number
+    shows...") fail the same way. On the first 80 NASA candidates this pattern
+    flagged 14, and every one was a question a reviewer would reject, so it
+    rejects automatically.
+    """
+    return bool(_CONTEXT_DEPENDENT.search(question))
+
+
+def answer_in_question(question: str, answer: str | None) -> bool:
+    """Every meaningful token of the answer already appears in the question.
+
+    "Which company is developing the 12 kW Aerojet thruster?" -> "Aerojet".
+    A flag for the reviewer, not a rejection: on the NASA candidates it also
+    caught "What material class is specified?" -> "Class I", where the
+    distinguishing "I" is dropped as a stopword. Imprecise detectors flag;
+    only precise ones reject.
+    """
+    if not answer:
+        return False
+    answer_tokens = {t for t in tokenize(answer) if t not in _ANSWER_FILLER}
+    if not answer_tokens:
+        return False
+    return answer_tokens <= set(tokenize(question))
+
+
+_ANSWER_FILLER = frozenset({"the", "a", "an", "of", "and", "or", "to", "in", "on", "for", "is"})
+
+
 def lexical_overlap(question: str, evidence: str) -> float:
     """Fraction of the question's content words that appear in the evidence.
 
@@ -472,6 +518,10 @@ def _to_case(
 
     if not question:
         return Rejection(chunk.id, "empty_question")
+    if is_context_dependent(question):
+        return Rejection(chunk.id, "context_dependent",
+                         detail="question only makes sense to someone holding the passage",
+                         question=question, evidence=evidence or None)
     if not evidence:
         return Rejection(chunk.id, "no_evidence", question=question)
 
@@ -510,6 +560,8 @@ def _to_case(
     if located.kind in ("fuzzy", "gapped"):
         labels["evidence_match"] = located.kind
         labels["evidence_similarity"] = located.similarity
+    if answer_in_question(question, answer):
+        labels["answer_in_question"] = True
 
     if chunk.span is not None:
         gold_spans: tuple[Span, ...] = (

@@ -142,6 +142,58 @@ class TestMatchEvidence:
         assert locate_evidence(OCR_PASSAGE, "a small metallic sphere at the end") is None
 
 
+class TestQuestionQuality:
+    """Patterns taken from real candidates generated from the NASA corpus."""
+
+    @pytest.mark.parametrize("question", [
+        "What is the operating rate of the green laser mentioned in the passage?",
+        "What is the main component of EPIC according to the passage?",
+        "What is the maximum peak radiance value specified in the document?",
+        "Which semiconductor material is used in the calculations described in the memorandum?",
+        "What kind of propulsion system is highlighted in the passage?",
+        "Which figure number corresponds to the simplified shunt regulation illustration?",
+        "What figure caption mentions the MEMS-actuated wavefront controller?",
+    ])
+    def test_context_dependent(self, question):
+        from retrace.synthesis import is_context_dependent
+
+        assert is_context_dependent(question)
+
+    @pytest.mark.parametrize("question", [
+        "What sets the size of a spacecraft's heat-dumping panels?",
+        "How many packets did Goldstone receive from the satellites when DTN was used?",
+        "Which propellant shows lower specific mass below 4000 seconds of specific impulse?",
+        "What does a Langmuir probe consist of?",
+        "Which table salt substitute was tested?",  # 'table' mid-sentence is fine
+    ])
+    def test_ordinary_questions_pass(self, question):
+        from retrace.synthesis import is_context_dependent
+
+        assert not is_context_dependent(question)
+
+    def test_answer_in_question(self):
+        from retrace.synthesis import answer_in_question
+
+        assert answer_in_question(
+            "Which company is developing the 12 kW Aerojet thruster for the PPE?", "Aerojet")
+        assert answer_in_question(
+            "What pre-combustion pressure is specified for a BMEP of 200 psi?", "200 PSI")
+        assert not answer_in_question("Which figure shows the regulator?", "Figure 6-5")
+        assert not answer_in_question("What sets radiator size?", "the worst-case hot condition")
+        assert not answer_in_question("Anything?", None)
+
+    def test_context_dependent_candidates_are_rejected(self):
+        bad = good(question="What drives radiator sizing according to the passage?")
+        result = synthesize([chunk()], scripted(bad))
+        assert result.rejections[0].reason == "context_dependent"
+
+    def test_answer_leak_is_flagged_not_rejected(self):
+        leak = good(question="Is the worst-case hot condition what sizes the panels?",
+                    answer="the worst-case hot condition")
+        (case,) = synthesize([chunk()], scripted(leak), max_overlap=None).cases
+        assert case.labels["answer_in_question"] is True
+
+
 class TestLexicalOverlap:
     def test_copied_question_scores_high(self):
         q = "Is radiator area sized by the worst-case hot condition?"
