@@ -54,6 +54,32 @@ def load_object(spec: str) -> Any:
     return obj() if call else obj
 
 
+PROVIDER_CHOICES = ("anthropic", "groq", "openai-compatible")
+
+
+def _add_llm_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--provider", choices=PROVIDER_CHOICES, default="anthropic",
+                   help="model provider (default anthropic; groq reads GROQ_API_KEY)")
+    p.add_argument("--model", default=None,
+                   help="model id (default: claude-opus-5 for anthropic, "
+                        "openai/gpt-oss-120b for groq)")
+    p.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], default=None,
+                   help="reasoning effort; groq and openai-compatible accept low/medium/high")
+    p.add_argument("--base-url", default=None, help="for --provider openai-compatible")
+    p.add_argument("--api-key-env", default=None,
+                   help="environment variable holding the key (openai-compatible)")
+
+
+def _llm_from_args(provider, model, effort, base_url, api_key_env):
+    from .llm import build_llm
+
+    try:
+        return build_llm(provider, model=model, effort=effort, base_url=base_url,
+                         api_key_env=api_key_env)
+    except ValueError as exc:
+        raise RetraceError(str(exc)) from exc
+
+
 EXIT_THRESHOLD = 3
 """Distinct from 2 (usage or runtime error) so CI can tell 'broken' from 'worse'."""
 
@@ -105,12 +131,9 @@ def cmd_synth(args: argparse.Namespace) -> int:
         print("no chunks long enough to synthesise from; lower --min-chunk-chars", file=sys.stderr)
         return 2
 
-    if args.llm:
-        llm = load_object(args.llm)
-    else:
-        from .llm import AnthropicLLM
-
-        llm = AnthropicLLM(model=args.model, effort=args.effort)
+    llm = load_object(args.llm) if args.llm else _llm_from_args(
+        args.provider, args.model, args.effort, args.base_url, args.api_key_env
+    )
 
     name = getattr(llm, "name", type(llm).__name__)
     print(f"synthesising from {len(picked)} passages across "
@@ -118,6 +141,7 @@ def cmd_synth(args: argparse.Namespace) -> int:
 
     cases, rejections = [], []
     interrupted = False
+    stopped: RetraceError | None = None
     try:
         for i, item in enumerate(iter_synthesize(picked, llm, max_overlap=args.max_overlap), 1):
             if isinstance(item, Rejection):
@@ -131,6 +155,11 @@ def cmd_synth(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         interrupted = True
         print("\n  interrupted -- saving what was produced")
+    except RetraceError as exc:
+        # Auth failure, daily quota, persistent server errors: stop, but never
+        # throw away candidates that were already paid for.
+        stopped = exc
+        print(f"\n  stopped: {exc}\n  saving what was produced")
     print()
 
     out = Path(args.out)
@@ -158,7 +187,11 @@ def cmd_synth(args: argparse.Namespace) -> int:
         u = usage.as_dict()
         print(f"model usage: {u['calls']} calls, {u['input_tokens']} in / "
               f"{u['output_tokens']} out tokens"
-              + (f", {u['fallbacks']} served by fallback" if u.get("fallbacks") else ""))
+              + (f", {u['fallbacks']} served by fallback" if u.get("fallbacks") else "")
+              + (f", {u['rate_limit_waits']} rate-limit waits ({u['waited_s']}s)"
+                 if u.get("rate_limit_waits") else ""))
+    if stopped is not None:
+        return 2
     print(f"\nnext: retrace label --candidates {out} --docs {args.docs} --out golden.jsonl")
     return 130 if interrupted else 0
 
@@ -247,9 +280,8 @@ def _build_judge(args: argparse.Namespace):
         return None
     if args.judge == "llm":
         from .judge import LLMJudge
-        from .llm import AnthropicLLM
 
-        return LLMJudge(AnthropicLLM(model=args.judge_model, effort="low"))
+        return LLMJudge(_llm_from_args(args.judge_provider, args.judge_model, "low", None, None))
     from .judge import TokenRecallJudge
 
     return TokenRecallJudge()
@@ -330,8 +362,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-overlap", type=_parse_overlap, default=0.8,
                    help="reject questions copying more than this fraction of their "
                         "content words from the evidence (default 0.8; 'none' disables)")
-    p.add_argument("--model", default="claude-opus-5", help="Anthropic model id")
-    p.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], default=None)
+    _add_llm_args(p)
     p.add_argument("--llm", help="use your own model instead: 'module:attr' resolving to an LLM "
                                  "or a callable (system, prompt, schema) -> dict")
     p.set_defaults(func=cmd_synth)
@@ -360,7 +391,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--k", type=int, default=10, help="top-k for retrieve-only pipelines")
     p.add_argument("--judge", choices=["recall", "llm", "none"], default="recall",
                    help="answer judge for GENERATION_MISS (default: free token-recall)")
-    p.add_argument("--judge-model", default="claude-opus-5")
+    p.add_argument("--judge-provider", choices=PROVIDER_CHOICES, default="anthropic",
+                   help="provider for --judge llm (default anthropic)")
+    p.add_argument("--judge-model", default=None,
+                   help="model for --judge llm (default: the provider's default)")
     p.add_argument("--out", default="runs/run.json", help="run file to write")
     p.add_argument("--report", action="store_true",
                    help="also write a self-contained HTML report next to the run file")
@@ -379,6 +413,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    # A gitignored .env next to the command is the easiest place for an API key
+    # that should never be typed into a shell history or pasted into a chat.
+    from .llm import load_env_file
+
+    load_env_file(".env")
     try:
         return args.func(args)
     except RetraceError as exc:

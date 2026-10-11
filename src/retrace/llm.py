@@ -47,14 +47,18 @@ class Usage:
     output_tokens: int = 0
     refusals: int = 0
     fallbacks: int = 0
+    rate_limit_waits: int = 0
+    waited_s: float = 0.0
 
-    def as_dict(self) -> dict[str, int]:
+    def as_dict(self) -> dict[str, int | float]:
         return {
             "calls": self.calls,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "refusals": self.refusals,
             "fallbacks": self.fallbacks,
+            "rate_limit_waits": self.rate_limit_waits,
+            "waited_s": round(self.waited_s, 1),
         }
 
 
@@ -223,13 +227,307 @@ class AnthropicLLM:
             self.usage.fallbacks += 1
 
 
+# --------------------------------------------------------------------------
+# OpenAI-compatible endpoints (Groq, OpenAI, Together, Ollama, vLLM, ...)
+# --------------------------------------------------------------------------
+
+PROVIDERS: dict[str, dict[str, str]] = {
+    "groq": {
+        "base_url": "https://api.groq.com/openai/v1",
+        "api_key_env": "GROQ_API_KEY",
+        # Supports strict json_schema output; free tier is limited by tokens per
+        # minute, which the retry logic below absorbs.
+        "model": "openai/gpt-oss-120b",
+    },
+}
+
+Transport = Callable[[str, dict[str, str], bytes, float], tuple[int, dict[str, str], bytes]]
+
+
+def _urllib_transport(
+    url: str, headers: dict[str, str], body: bytes, timeout: float
+) -> tuple[int, dict[str, str], bytes]:
+    """POST with the standard library. Returns (status, headers, body) for any status."""
+    import urllib.error
+    import urllib.request
+
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.read()
+    except urllib.error.HTTPError as exc:
+        return exc.code, {k.lower(): v for k, v in exc.headers.items()}, exc.read()
+
+
+@dataclass
+class OpenAICompatibleLLM:
+    """`LLM` for any endpoint speaking the OpenAI chat-completions protocol.
+
+    Standard library only -- no SDK -- so one class covers Groq, OpenAI,
+    Together, Ollama, vLLM and LM Studio without adding a dependency. Use
+    `OpenAICompatibleLLM.preset("groq")` for a ready configuration.
+
+    The key is read from the environment variable named by `api_key_env` at
+    call time and never stored in logs, reprs or run files.
+
+    Failure handling, from the cheapest to the most fatal:
+
+    * 429 rate limit  -- wait for ``retry-after`` and retry. Free tiers are
+      limited by tokens per minute, so this is routine, not exceptional.
+    * 5xx / network   -- exponential backoff, then give up.
+    * truncated / unparseable output, schema mismatch -- `LLMOutputError`:
+      that one passage is rejected and the run continues.
+    * 401/403, bad model, other 4xx, or a wait longer than `max_wait_s` (a
+      daily quota) -- `RetraceError`: a setup problem that should stop the run
+      immediately rather than burn through every passage.
+    """
+
+    model: str
+    base_url: str
+    api_key_env: str = "OPENAI_API_KEY"
+    max_tokens: int = 4096
+    """Reasoning models spend output tokens thinking; Groq's default of 1024
+    truncates them."""
+
+    reasoning_effort: str | None = None
+    strict_schema: bool = True
+    """Constrained json_schema decoding. Set False for models that only support
+    JSON-object mode; the schema then goes into the system prompt."""
+
+    max_retries: int = 6
+    max_wait_s: float = 120.0
+    timeout_s: float = 120.0
+    provider: str = "openai-compatible"
+    transport: Transport | None = None
+    sleep: Callable[[float], None] | None = None
+    usage: Usage = field(default_factory=Usage)
+
+    @classmethod
+    def preset(cls, provider: str, **overrides: Any) -> OpenAICompatibleLLM:
+        if provider not in PROVIDERS:
+            raise ValueError(f"unknown provider {provider!r}; known: {sorted(PROVIDERS)}")
+        config = dict(PROVIDERS[provider])
+        config.update({k: v for k, v in overrides.items() if v is not None})
+        return cls(provider=provider, **config)
+
+    @property
+    def name(self) -> str:
+        return f"{self.provider}:{self.model}"
+
+    def __repr__(self) -> str:  # never include the key
+        return f"OpenAICompatibleLLM({self.name}, base_url={self.base_url!r})"
+
+    def _api_key(self) -> str:
+        import os
+
+        from .errors import RetraceError
+
+        key = os.environ.get(self.api_key_env, "").strip()
+        if not key:
+            raise RetraceError(
+                f"{self.api_key_env} is not set. Put it in your environment or in a .env "
+                f"file next to where you run retrace ({self.api_key_env}=...)."
+            )
+        return key
+
+    def complete_json(self, *, system: str, prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
+        import time
+
+        from .errors import RetraceError
+
+        if self.strict_schema:
+            response_format: dict[str, Any] = {
+                "type": "json_schema",
+                "json_schema": {"name": "retrace_output", "strict": True, "schema": schema},
+            }
+        else:
+            response_format = {"type": "json_object"}
+            system = (f"{system}\n\nRespond with a single JSON object matching this JSON "
+                      f"schema, and nothing else:\n{json.dumps(schema)}")
+
+        body: dict[str, Any] = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+            "max_completion_tokens": self.max_tokens,
+            "response_format": response_format,
+        }
+        if self.reasoning_effort:
+            body["reasoning_effort"] = self.reasoning_effort
+
+        url = self.base_url.rstrip("/") + "/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self._api_key()}",
+            "Content-Type": "application/json",
+            "User-Agent": "retrace-rag",
+        }
+        payload = json.dumps(body).encode("utf-8")
+        send = self.transport or _urllib_transport
+        sleep = self.sleep or time.sleep
+
+        delay = 2.0
+        for attempt in range(self.max_retries + 1):
+            try:
+                status, resp_headers, raw = send(url, headers, payload, self.timeout_s)
+            except OSError as exc:  # DNS, connection reset, timeout
+                if attempt == self.max_retries:
+                    raise RetraceError(f"{self.name}: network error after retries: {exc}") from exc
+                sleep(delay)
+                delay = min(delay * 2, 60.0)
+                continue
+
+            if status == 200:
+                return self._parse(raw)
+
+            text = raw.decode("utf-8", errors="replace")
+            message = _error_message(text)
+
+            if status == 429:
+                wait = _retry_after(resp_headers) or delay
+                if wait > self.max_wait_s:
+                    raise RetraceError(
+                        f"{self.name}: rate limited for {wait:.0f}s -- probably a daily quota. "
+                        "Wait it out or use a different model."
+                    )
+                if attempt == self.max_retries:
+                    raise RetraceError(f"{self.name}: still rate limited after {attempt} retries")
+                self.usage.rate_limit_waits += 1
+                self.usage.waited_s += wait
+                sleep(wait)
+                delay = min(delay * 2, 60.0)
+                continue
+
+            if status >= 500:
+                if attempt == self.max_retries:
+                    raise RetraceError(f"{self.name}: server error {status}: {message}")
+                sleep(delay)
+                delay = min(delay * 2, 60.0)
+                continue
+
+            if status == 400 and "does not match the expected schema" in message:
+                self.usage.calls += 1
+                raise LLMOutputError(f"output failed schema validation: {message}")
+            if status in (401, 403):
+                raise RetraceError(
+                    f"{self.name}: authentication failed ({status}). Check {self.api_key_env}."
+                )
+            raise RetraceError(f"{self.name}: HTTP {status}: {message}")
+
+        raise RetraceError(f"{self.name}: request failed")  # pragma: no cover - loop always returns
+
+    def _parse(self, raw: bytes) -> dict[str, Any]:
+        self.usage.calls += 1
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise LLMOutputError(f"response is not JSON: {exc.msg}") from exc
+        usage = data.get("usage") or {}
+        self.usage.input_tokens += int(usage.get("prompt_tokens") or 0)
+        self.usage.output_tokens += int(usage.get("completion_tokens") or 0)
+
+        choices = data.get("choices") or []
+        if not choices:
+            raise LLMOutputError("response contained no choices")
+        choice = choices[0]
+        finish = choice.get("finish_reason")
+        if finish == "content_filter":
+            self.usage.refusals += 1
+            raise LLMRefusalError("provider content filter blocked the response")
+        if finish == "length":
+            raise LLMOutputError(
+                f"output truncated at max_tokens={self.max_tokens}; raise max_tokens"
+            )
+        content = (choice.get("message") or {}).get("content")
+        if not content:
+            raise LLMOutputError("response message has no content")
+        return parse_json_object(content)
+
+
+def _error_message(text: str) -> str:
+    try:
+        err = json.loads(text).get("error")
+    except (json.JSONDecodeError, AttributeError):
+        return text[:300]
+    if isinstance(err, dict):
+        return str(err.get("message", ""))[:300]
+    return str(err)[:300]
+
+
+def _retry_after(headers: dict[str, str]) -> float | None:
+    value = headers.get("retry-after")
+    if value is None:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        return None
+
+
+def build_llm(
+    provider: str,
+    *,
+    model: str | None = None,
+    effort: str | None = None,
+    base_url: str | None = None,
+    api_key_env: str | None = None,
+) -> Any:
+    """One place that turns CLI choices into an `LLM`."""
+    if provider == "anthropic":
+        return AnthropicLLM(model=model or DEFAULT_ANTHROPIC_MODEL, effort=effort)
+    if effort not in (None, "low", "medium", "high"):
+        raise ValueError(f"--effort {effort} is not supported by {provider}; use low/medium/high")
+    if provider == "openai-compatible":
+        if not (base_url and model):
+            raise ValueError("--provider openai-compatible needs --base-url and --model")
+        return OpenAICompatibleLLM(model=model, base_url=base_url,
+                                   api_key_env=api_key_env or "OPENAI_API_KEY",
+                                   reasoning_effort=effort)
+    return OpenAICompatibleLLM.preset(provider, model=model, base_url=base_url,
+                                      api_key_env=api_key_env, reasoning_effort=effort)
+
+
+def load_env_file(path: str = ".env") -> list[str]:
+    """Load ``KEY=VALUE`` lines into the environment, never overriding what is set.
+
+    Returns the names loaded -- never the values. Lets a key live in a
+    gitignored file instead of being typed into a shell history or a chat.
+    """
+    import os
+    from pathlib import Path
+
+    p = Path(path)
+    if not p.is_file():
+        return []
+    loaded = []
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):]
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if key and key not in os.environ:
+            os.environ[key] = value
+            loaded.append(key)
+    return loaded
+
+
 __all__ = [
     "DEFAULT_ANTHROPIC_MODEL",
     "LLM",
+    "PROVIDERS",
     "AnthropicLLM",
     "CallableLLM",
     "LLMError",
+    "OpenAICompatibleLLM",
     "Usage",
     "as_llm",
+    "build_llm",
+    "load_env_file",
     "parse_json_object",
 ]

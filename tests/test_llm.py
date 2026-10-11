@@ -144,6 +144,8 @@ class TestAnthropicLLM:
             "output_tokens": 60,
             "refusals": 0,
             "fallbacks": 2,
+            "rate_limit_waits": 0,
+            "waited_s": 0.0,
         }
 
     def test_name(self):
