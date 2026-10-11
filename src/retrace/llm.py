@@ -406,9 +406,13 @@ class OpenAICompatibleLLM:
                 delay = min(delay * 2, 60.0)
                 continue
 
-            if status == 400 and "does not match the expected schema" in message:
+            if status == 400 and _is_generation_failure(text):
+                # The model produced output the provider could not validate:
+                # bad luck on one passage, not a broken setup. Groq's docs name
+                # one wording; the live API also returned "Failed to validate
+                # JSON ... see 'failed_generation'", so match on structure.
                 self.usage.calls += 1
-                raise LLMOutputError(f"output failed schema validation: {message}")
+                raise LLMOutputError(f"output failed validation: {message}")
             if status in (401, 403):
                 raise RetraceError(
                     f"{self.name}: authentication failed ({status}). Check {self.api_key_env}."
@@ -443,6 +447,28 @@ class OpenAICompatibleLLM:
         if not content:
             raise LLMOutputError("response message has no content")
         return parse_json_object(content)
+
+
+_GENERATION_FAILURE_PHRASES = (
+    "does not match the expected schema",
+    "failed to validate json",
+    "failed_generation",
+)
+
+
+def _is_generation_failure(text: str) -> bool:
+    """A 400 caused by what the model generated, rather than by the request."""
+    try:
+        err = json.loads(text).get("error")
+    except (json.JSONDecodeError, AttributeError):
+        err = None
+    if isinstance(err, dict):
+        if "failed_generation" in err:
+            return True
+        if "json_validate" in str(err.get("code", "")).lower():
+            return True
+    lowered = text.lower()
+    return any(phrase in lowered for phrase in _GENERATION_FAILURE_PHRASES)
 
 
 def _error_message(text: str) -> str:

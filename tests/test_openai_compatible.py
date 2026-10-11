@@ -176,7 +176,30 @@ class TestFailures:
     def test_schema_mismatch_rejects_the_passage(self, key):
         llm, _ = groq(FakeServer(err(400, "Generated JSON does not match the expected schema. "
                                           "Please adjust your prompt.")))
-        with pytest.raises(LLMOutputError, match="schema validation"):
+        with pytest.raises(LLMOutputError, match="failed validation"):
+            llm.complete_json(system="s", prompt="p", schema=SCHEMA)
+
+    def test_live_validation_failure_wording_rejects_the_passage(self, key):
+        """The exact 400 the live Groq API returned mid-run, which used to stop it."""
+        body = json.dumps({"error": {
+            "message": "Failed to validate JSON. Please adjust your prompt. "
+                       "See 'failed_generation' for more details.",
+            "type": "invalid_request_error",
+            "failed_generation": '{"answerable": true, "question": ',
+        }}).encode()
+        llm, _ = groq(FakeServer((400, {}, body)))
+        with pytest.raises(LLMOutputError, match="failed validation"):
+            llm.complete_json(system="s", prompt="p", schema=SCHEMA)
+
+    def test_validation_failure_by_error_code(self, key):
+        body = json.dumps({"error": {"message": "x", "code": "json_validate_failed"}}).encode()
+        llm, _ = groq(FakeServer((400, {}, body)))
+        with pytest.raises(LLMOutputError):
+            llm.complete_json(system="s", prompt="p", schema=SCHEMA)
+
+    def test_other_400s_still_stop_the_run(self, key):
+        llm, _ = groq(FakeServer(err(400, "'reasoning_effort' is not supported for this model")))
+        with pytest.raises(RetraceError, match="HTTP 400"):
             llm.complete_json(system="s", prompt="p", schema=SCHEMA)
 
     def test_bad_model_stops_the_run(self, key):

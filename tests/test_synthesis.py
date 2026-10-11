@@ -63,6 +63,54 @@ class TestLocateEvidence:
         assert locate_evidence(PASSAGE, "   ") is None
 
 
+OCR_PASSAGE = (
+    "In their simplest form, an electric probe\n(specifically, a Langmuir probe) "
+    "consists of an insulated\n(perhaps with a small metaIIic sphere at the end) wire "
+    "inserted into the plasma."
+)
+
+
+class TestMatchEvidence:
+    def test_exact(self):
+        from retrace.synthesis import match_evidence
+
+        m = match_evidence(PASSAGE, "worst-case hot condition")
+        assert (m.kind, m.similarity) == ("exact", 1.0)
+
+    def test_normalised_whitespace_and_case(self):
+        from retrace.synthesis import match_evidence
+
+        m = match_evidence("sized by the\n   worst-case hot\ncondition", "Sized by the worst-case")
+        assert m.kind == "normalised"
+
+    def test_tolerates_an_ocr_correction(self):
+        """Source says 'metaIIic' (OCR); the model quoted 'metallic'."""
+        from retrace.synthesis import match_evidence
+
+        quote = ("an electric probe (specifically, a Langmuir probe) consists of an "
+                 "insulated (perhaps with a small metallic sphere at the end) wire")
+        m = match_evidence(OCR_PASSAGE, quote)
+        assert m is not None and m.kind == "fuzzy"
+        assert m.similarity >= 0.95
+        found = OCR_PASSAGE[m.start:m.end]
+        assert found.startswith("an electric probe") and found.endswith("wire")
+        assert "metaIIic" in found  # the span points at the real source text
+
+    def test_rejects_a_paraphrase(self):
+        from retrace.synthesis import match_evidence
+
+        quote = "a Langmuir probe is basically an insulated wire with a little metal ball on it"
+        assert match_evidence(OCR_PASSAGE, quote) is None
+
+    def test_short_quotes_never_match_fuzzily(self):
+        from retrace.synthesis import match_evidence
+
+        assert match_evidence(OCR_PASSAGE, "metallic sphere") is None
+
+    def test_strict_locate_evidence_is_unchanged(self):
+        assert locate_evidence(OCR_PASSAGE, "a small metallic sphere at the end") is None
+
+
 class TestLexicalOverlap:
     def test_copied_question_scores_high(self):
         q = "Is radiator area sized by the worst-case hot condition?"
@@ -165,6 +213,20 @@ class TestSynthesize:
         result = synthesize([chunk()], scripted(good(evidence="radiators are sized for peak heat")))
         assert not result.cases
         assert result.rejections[0].reason == "evidence_not_verbatim"
+        # The full quote is kept so the rejection can be diagnosed later.
+        assert result.rejections[0].evidence == "radiators are sized for peak heat"
+
+    def test_ocr_corrected_evidence_is_kept_and_labelled(self):
+        ocr = chunk(text=OCR_PASSAGE, cid="ocr")
+        quote = ("an electric probe (specifically, a Langmuir probe) consists of an "
+                 "insulated (perhaps with a small metallic sphere at the end) wire")
+        result = synthesize([ocr], scripted(good(
+            question="What does the simplest plasma diagnostic instrument look like?",
+            evidence=quote, answer="An insulated wire, possibly with a small sphere.",
+        )))
+        (case,) = result.cases
+        assert case.labels["evidence_match"] == "fuzzy"
+        assert case.labels["evidence_similarity"] >= 0.95
 
     def test_leaky_question_is_rejected(self):
         # "radiator area" is outside the evidence quote but inside the passage --

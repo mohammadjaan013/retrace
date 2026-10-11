@@ -169,7 +169,7 @@ def cmd_synth(args: argparse.Namespace) -> int:
         for r in rejections:
             handle.write(json.dumps(
                 {"chunk_id": r.chunk_id, "reason": r.reason, "detail": r.detail,
-                 "question": r.question},
+                 "question": r.question, "evidence": r.evidence},
                 ensure_ascii=False,
             ) + "\n")
 

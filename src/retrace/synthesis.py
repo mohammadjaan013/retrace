@@ -97,6 +97,8 @@ class Rejection:
     reason: str
     detail: str = ""
     question: str | None = None
+    evidence: str | None = None
+    """The model's full quote, kept untruncated so rejections can be diagnosed."""
 
 
 @dataclass
@@ -254,6 +256,104 @@ def locate_evidence(passage: str, quote: str) -> tuple[int, int] | None:
     return start, end
 
 
+DEFAULT_MIN_SIMILARITY = 0.92
+FUZZY_MIN_CHARS = 30
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceMatch:
+    start: int
+    end: int
+    kind: str
+    """exact | normalised (whitespace/case only) | fuzzy (OCR-tolerant)."""
+
+    similarity: float = 1.0
+
+
+def _normalise_with_origin(text: str) -> tuple[str, list[int]]:
+    """Whitespace-collapsed, lowercased text plus each character's original index."""
+    chars: list[str] = []
+    origin: list[int] = []
+    in_space = False
+    for i, ch in enumerate(text):
+        if ch.isspace():
+            if not in_space and chars:
+                chars.append(" ")
+                origin.append(i)
+            in_space = True
+        else:
+            chars.append(ch.lower())
+            origin.append(i)
+            in_space = False
+    return "".join(chars), origin
+
+
+def match_evidence(
+    passage: str,
+    quote: str,
+    *,
+    min_similarity: float = DEFAULT_MIN_SIMILARITY,
+) -> EvidenceMatch | None:
+    """Locate a model's evidence quote, tolerating OCR corrections but not paraphrase.
+
+    Three tiers, strictest first. The fuzzy tier exists because of a real
+    failure on the NASA corpus: the source text read "a small metaIIic sphere"
+    (OCR misreading "metallic"), the model quoted the corrected word, and a
+    strictly verbatim matcher threw away a correct question. Fuzzy matching
+    requires a quote of at least 30 characters and `min_similarity` character
+    agreement with one passage window -- a handful of corrected characters
+    passes, a reworded sentence does not. Every fuzzy match is reported as
+    such, so a reviewer can see it.
+    """
+    quote = quote.strip()
+    if not quote:
+        return None
+
+    exact = passage.find(quote)
+    if exact >= 0:
+        return EvidenceMatch(exact, exact + len(quote), "exact")
+
+    norm_passage, origin = _normalise_with_origin(passage)
+    norm_quote = _WS_RE.sub(" ", quote).lower()
+    if not norm_passage or not norm_quote:
+        return None
+
+    pos = norm_passage.find(norm_quote)
+    if pos >= 0:
+        return EvidenceMatch(origin[pos], origin[pos + len(norm_quote) - 1] + 1, "normalised")
+
+    if len(norm_quote) < FUZZY_MIN_CHARS:
+        return None
+
+    from difflib import SequenceMatcher
+
+    anchor = SequenceMatcher(None, norm_passage, norm_quote, autojunk=False).find_longest_match(
+        0, len(norm_passage), 0, len(norm_quote)
+    )
+    if anchor.size == 0:
+        return None
+    base = anchor.a - anchor.b
+    slack = max(3, len(norm_quote) // 20)
+    best: tuple[float, int, int] | None = None
+    for d_start in range(-slack, slack + 1):
+        lo = max(0, base + d_start)
+        for d_end in range(-slack, slack + 1):
+            hi = min(len(norm_passage), base + len(norm_quote) + d_end)
+            if hi - lo < FUZZY_MIN_CHARS:
+                continue
+            ratio = SequenceMatcher(None, norm_passage[lo:hi], norm_quote, autojunk=False).ratio()
+            if best is None or ratio > best[0]:
+                best = (ratio, lo, hi)
+    if best is None or best[0] < min_similarity:
+        return None
+    ratio, lo, hi = best
+    while lo < hi and norm_passage[lo] == " ":
+        lo += 1
+    while hi > lo and norm_passage[hi - 1] == " ":
+        hi -= 1
+    return EvidenceMatch(origin[lo], origin[hi - 1] + 1, "fuzzy", round(ratio, 3))
+
+
 def lexical_overlap(question: str, evidence: str) -> float:
     """Fraction of the question's content words that appear in the evidence.
 
@@ -328,13 +428,14 @@ def _to_case(
     if not evidence:
         return Rejection(chunk.id, "no_evidence", question=question)
 
-    located = locate_evidence(chunk.text, evidence)
+    located = match_evidence(chunk.text, evidence)
     if located is None:
         return Rejection(
             chunk.id,
             "evidence_not_verbatim",
-            detail=f"quote not found in passage: {evidence[:120]!r}",
+            detail="quote not found in passage, even allowing for OCR corrections",
             question=question,
+            evidence=evidence,
         )
 
     key = _normalise_question(question)
@@ -354,11 +455,14 @@ def _to_case(
         )
     seen.add(key)
 
-    start, end = located
+    start, end = located.start, located.end
     labels: dict[str, Any] = {
         "synthesized_by": model_name,
         "lexical_overlap": round(overlap, 3),
     }
+    if located.kind == "fuzzy":
+        labels["evidence_match"] = "fuzzy"
+        labels["evidence_similarity"] = located.similarity
 
     if chunk.span is not None:
         gold_spans: tuple[Span, ...] = (
