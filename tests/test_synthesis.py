@@ -128,7 +128,8 @@ class TestMatchEvidence:
         from retrace.synthesis import match_evidence
 
         long_gap = "the limiting link is " + "x" * 200 + " the DSG to the lunar surface."
-        assert match_evidence(long_gap, "the limiting link is the DSG to the lunar surface.") is None
+        quote = "the limiting link is the DSG to the lunar surface."
+        assert match_evidence(long_gap, quote) is None
 
     def test_gap_pieces_must_be_substantial(self):
         from retrace.synthesis import _match_with_gap
