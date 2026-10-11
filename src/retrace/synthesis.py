@@ -117,18 +117,56 @@ class SynthesisResult:
 # --------------------------------------------------------------------------
 
 
+_CITATION_MARKERS = tuple(
+    re.compile(pattern, re.MULTILINE | re.IGNORECASE)
+    for pattern in (
+        r"\bvol\.\s*\d", r"\bpp\.\s*\d", r"\bet al\.?", r"\bProc(?:eedings|\.)",
+        r"\bJournal\b", r"\bConference\b", r"\bdoi\b", r"\bISBN\b", r"\bAIAA[- ]\d",
+        r"\bNASA (?:TM|CR|TP|SP)[- ]", r"^\s*\[\d+\]",
+        r"^\s*\d{1,3}\.\s+[A-Z][a-z]+,\s+[A-Z]\.",
+    )
+)
+_CITATION_YEAR = re.compile(r"\((?:19|20)\d{2}\)|,\s*(?:19|20)\d{2}[.,]")
+
+DEFAULT_REFERENCE_DENSITY = 4.0
+"""Citation markers per 1,000 characters above which a chunk is treated as a
+reference list. Calibrated on the 200-document NASA corpus: chunks at 8+ were
+all bibliographies, 5-8 mostly were, 3-5 were about half. Set deliberately on
+the aggressive side because the costs are lopsided -- skipping one prose chunk
+out of thousands costs nothing, while synthesising from a bibliography spends a
+model call and a reviewer's time on "when was this paper published?"."""
+
+
+def citation_density(text: str) -> float:
+    """Citation-like markers (vol., pp., et al., years in references...) per 1k chars."""
+    if not text:
+        return 0.0
+    hits = sum(len(rx.findall(text)) for rx in _CITATION_MARKERS)
+    hits += len(_CITATION_YEAR.findall(text))
+    return hits / (len(text) / 1000)
+
+
+def looks_like_references(text: str, threshold: float = DEFAULT_REFERENCE_DENSITY) -> bool:
+    return citation_density(text) >= threshold
+
+
 def sample_chunks(
     chunks: Iterable[Chunk],
     n: int,
     *,
     seed: int = 0,
     min_chars: int = DEFAULT_MIN_CHUNK_CHARS,
+    skip_references: bool = True,
 ) -> list[Chunk]:
     """Pick `n` chunks, spread across documents, deterministically.
 
     Round-robins over documents so one 400-page report cannot supply every
     question. Chunks shorter than `min_chars` are skipped: fragments, headers and
-    trailing windows produce thin questions.
+    trailing windows produce thin questions. Reference lists are skipped too:
+    the first live run against NASA reports asked a reasoning model for a
+    question about a bibliography entry, and the system prompt's instruction to
+    decline such passages did not stop it. Filtering before the call is cheaper
+    and more reliable than asking.
     """
     if n < 1:
         raise ValueError(f"n must be >= 1, got {n}")
@@ -136,8 +174,11 @@ def sample_chunks(
     rng = random.Random(seed)
     by_doc: dict[str, list[Chunk]] = {}
     for chunk in chunks:
-        if len(chunk.text.strip()) >= min_chars:
-            by_doc.setdefault(chunk.doc_id, []).append(chunk)
+        if len(chunk.text.strip()) < min_chars:
+            continue
+        if skip_references and looks_like_references(chunk.text):
+            continue
+        by_doc.setdefault(chunk.doc_id, []).append(chunk)
 
     # Sort before shuffling so the sample is identical regardless of the order
     # the corpus happened to be iterated in.

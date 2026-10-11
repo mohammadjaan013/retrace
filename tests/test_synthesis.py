@@ -103,6 +103,36 @@ class TestSampleChunks:
         with pytest.raises(ValueError):
             sample_chunks([chunk()], 0)
 
+    BIBLIOGRAPHY = (
+        "18. Smith, J., \"Characteristics of Ka Band Networks,\" AIAA-94-0987-CP, 1993.\n"
+        "19. Pike, C. P., et al., \"Spacecraft Charging Control,\" Journal of Spacecraft, "
+        "vol. 12, pp. 417-429, 1975.\n"
+        "20. Boyce, R., et al., \"Development of 12 kW Hall Thruster,\" Proceedings of the "
+        "AIAA Propulsion and Energy Conference, 2020.\n"
+        "21. Deutschmann, J., \"Comparison of Extended Kalman Filters,\" Journal of Guidance, "
+        "vol. 5, no. 5, pp. 417-429, 1982.\n"
+    )
+
+    def test_detects_a_bibliography(self):
+        from retrace.synthesis import citation_density, looks_like_references
+
+        assert looks_like_references(self.BIBLIOGRAPHY)
+        assert not looks_like_references(PASSAGE)
+        assert citation_density("") == 0.0
+
+    def test_prose_mentioning_one_citation_survives(self):
+        from retrace.synthesis import looks_like_references
+
+        prose = PASSAGE * 4 + " This follows the approach of Fischer et al. (1993)."
+        assert not looks_like_references(prose)
+
+    def test_reference_chunks_are_never_sampled(self):
+        bib = Chunk(id="bib", doc_id="d2", text=self.BIBLIOGRAPHY)
+        picked = sample_chunks([bib, chunk()], 5, min_chars=50)
+        assert [c.id for c in picked] == ["c1"]
+        kept = sample_chunks([bib, chunk()], 5, min_chars=50, skip_references=False)
+        assert {c.id for c in kept} == {"bib", "c1"}
+
 
 class TestSynthesize:
     def test_produces_a_grounded_untrusted_case(self):
