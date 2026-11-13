@@ -231,13 +231,28 @@ class AnthropicLLM:
 # OpenAI-compatible endpoints (Groq, OpenAI, Together, Ollama, vLLM, ...)
 # --------------------------------------------------------------------------
 
-PROVIDERS: dict[str, dict[str, str]] = {
+PROVIDERS: dict[str, dict[str, Any]] = {
     "groq": {
         "base_url": "https://api.groq.com/openai/v1",
         "api_key_env": "GROQ_API_KEY",
         # Supports strict json_schema output; free tier is limited by tokens per
-        # minute, which the retry logic below absorbs.
+        # minute, which the retry logic below absorbs. Verified live.
         "model": "openai/gpt-oss-120b",
+    },
+    "deepseek": {
+        # From DeepSeek's API docs (read 2026-11): OpenAI-compatible, but
+        # - only JSON-object mode, no json_schema -> schema goes in the prompt,
+        #   which must mention "json" and include an example;
+        # - the output limit is `max_tokens`, not `max_completion_tokens`;
+        # - thinking is ON by default and the docs do not say JSON mode works
+        #   while thinking, so it is switched off unless an effort is asked for;
+        # - JSON mode may return whitespace-only content -> retried.
+        "base_url": "https://api.deepseek.com",
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "model": "deepseek-flash",
+        "strict_schema": False,
+        "max_tokens_param": "max_tokens",
+        "no_effort_body": {"thinking": {"type": "disabled"}},
     },
 }
 
@@ -294,6 +309,14 @@ class OpenAICompatibleLLM:
     """Constrained json_schema decoding. Set False for models that only support
     JSON-object mode; the schema then goes into the system prompt."""
 
+    max_tokens_param: str = "max_completion_tokens"
+    """Name of the output-limit field. OpenAI and Groq use max_completion_tokens;
+    DeepSeek documents only max_tokens."""
+
+    no_effort_body: dict[str, Any] = field(default_factory=dict)
+    """Extra request fields sent only when no reasoning effort is set -- e.g.
+    DeepSeek's switch that turns its default-on thinking mode off."""
+
     max_retries: int = 6
     max_wait_s: float = 120.0
     timeout_s: float = 120.0
@@ -343,7 +366,9 @@ class OpenAICompatibleLLM:
         else:
             response_format = {"type": "json_object"}
             system = (f"{system}\n\nRespond with a single JSON object matching this JSON "
-                      f"schema, and nothing else:\n{json.dumps(schema)}")
+                      f"schema, and nothing else:\n{json.dumps(schema)}\n\n"
+                      f"Example of the required json shape:\n"
+                      f"{json.dumps(_example_from_schema(schema))}")
 
         body: dict[str, Any] = {
             "model": self.model,
@@ -351,11 +376,13 @@ class OpenAICompatibleLLM:
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt},
             ],
-            "max_completion_tokens": self.max_tokens,
+            self.max_tokens_param: self.max_tokens,
             "response_format": response_format,
         }
         if self.reasoning_effort:
             body["reasoning_effort"] = self.reasoning_effort
+        else:
+            body.update(self.no_effort_body)
 
         url = self.base_url.rstrip("/") + "/chat/completions"
         headers = {
@@ -379,7 +406,16 @@ class OpenAICompatibleLLM:
                 continue
 
             if status == 200:
-                return self._parse(raw)
+                try:
+                    return self._parse(raw)
+                except _TransientOutput as exc:
+                    # Whitespace-only JSON-mode output, or generation interrupted
+                    # by the provider: worth another attempt, not a rejection yet.
+                    if attempt == self.max_retries:
+                        raise LLMOutputError(str(exc)) from exc
+                    sleep(delay if exc.backoff else 0.0)
+                    delay = min(delay * 2, 60.0) if exc.backoff else delay
+                    continue
 
             text = raw.decode("utf-8", errors="replace")
             message = _error_message(text)
@@ -417,6 +453,9 @@ class OpenAICompatibleLLM:
                 raise RetraceError(
                     f"{self.name}: authentication failed ({status}). Check {self.api_key_env}."
                 )
+            if status == 402:
+                raise RetraceError(f"{self.name}: insufficient account balance (402). "
+                                   "Top up the account before running again.")
             raise RetraceError(f"{self.name}: HTTP {status}: {message}")
 
         raise RetraceError(f"{self.name}: request failed")  # pragma: no cover - loop always returns
@@ -443,10 +482,39 @@ class OpenAICompatibleLLM:
             raise LLMOutputError(
                 f"output truncated at max_tokens={self.max_tokens}; raise max_tokens"
             )
+        if finish in ("insufficient_system_resource", "aborted"):
+            raise _TransientOutput(f"generation interrupted by the provider ({finish})",
+                                   backoff=True)
         content = (choice.get("message") or {}).get("content")
+        if content is not None and not content.strip():
+            # DeepSeek's JSON mode documents this: non-JSON output is replaced
+            # with spaces, so a "successful" reply can be blank. Its docs say retry.
+            raise _TransientOutput("response content was blank", backoff=False)
         if not content:
             raise LLMOutputError("response message has no content")
         return parse_json_object(content)
+
+
+class _TransientOutput(Exception):
+    """A 200 response worth retrying rather than rejecting the passage."""
+
+    def __init__(self, message: str, *, backoff: bool) -> None:
+        super().__init__(message)
+        self.backoff = backoff
+
+
+def _example_from_schema(schema: dict[str, Any]) -> Any:
+    """A placeholder instance of a JSON schema, for providers that ask for an example."""
+    kind = schema.get("type")
+    if isinstance(kind, list):
+        kind = next((k for k in kind if k != "null"), "string")
+    if kind == "object":
+        return {k: _example_from_schema(v) for k, v in (schema.get("properties") or {}).items()}
+    if kind == "array":
+        return [_example_from_schema(schema.get("items") or {"type": "string"})]
+    if "enum" in schema:
+        return schema["enum"][0]
+    return {"boolean": True, "integer": 0, "number": 0.0}.get(kind, "...")
 
 
 _GENERATION_FAILURE_PHRASES = (

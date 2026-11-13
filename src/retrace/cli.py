@@ -54,15 +54,16 @@ def load_object(spec: str) -> Any:
     return obj() if call else obj
 
 
-PROVIDER_CHOICES = ("anthropic", "groq", "openai-compatible")
+PROVIDER_CHOICES = ("anthropic", "groq", "deepseek", "openai-compatible")
 
 
 def _add_llm_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--provider", choices=PROVIDER_CHOICES, default="anthropic",
-                   help="model provider (default anthropic; groq reads GROQ_API_KEY)")
+                   help="model provider (default anthropic; groq reads GROQ_API_KEY, "
+                        "deepseek reads DEEPSEEK_API_KEY)")
     p.add_argument("--model", default=None,
                    help="model id (default: claude-opus-5 for anthropic, "
-                        "openai/gpt-oss-120b for groq)")
+                        "openai/gpt-oss-120b for groq, deepseek-flash for deepseek)")
     p.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], default=None,
                    help="reasoning effort; groq and openai-compatible accept low/medium/high")
     p.add_argument("--base-url", default=None, help="for --provider openai-compatible")

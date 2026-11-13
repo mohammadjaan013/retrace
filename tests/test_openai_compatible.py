@@ -212,8 +212,16 @@ class TestFailures:
         with pytest.raises(LLMRefusalError):
             llm.complete_json(system="s", prompt="p", schema=SCHEMA)
 
-    def test_empty_content(self, key):
-        llm, _ = groq(FakeServer(ok(content="")))
+    def test_blank_content_is_retried_then_rejected(self, key):
+        llm, _ = groq(FakeServer(*[ok(content="")] * 3), max_retries=2)
+        with pytest.raises(LLMOutputError, match="blank"):
+            llm.complete_json(system="s", prompt="p", schema=SCHEMA)
+
+    def test_missing_content(self, key):
+        status, headers, body = ok()
+        payload = json.loads(body)
+        payload["choices"][0]["message"]["content"] = None
+        llm, _ = groq(FakeServer((status, headers, json.dumps(payload).encode())))
         with pytest.raises(LLMOutputError, match="no content"):
             llm.complete_json(system="s", prompt="p", schema=SCHEMA)
 
@@ -293,3 +301,86 @@ def test_synth_saves_partial_results_when_the_provider_stops_it(tmp_path, monkey
     out = capsys.readouterr().out
     assert "stopped:" in out and "daily quota" in out
     assert "gsk_test_not_real" not in out
+
+
+class TestDeepSeek:
+    """Behaviour taken from DeepSeek's API docs; checked against a fake server."""
+
+    @pytest.fixture
+    def ds_key(self, monkeypatch):
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "sk_test_not_real")
+
+    def ds(self, server, **kw):
+        slept = []
+        llm = OpenAICompatibleLLM.preset("deepseek", transport=server, sleep=slept.append, **kw)
+        return llm, slept
+
+    def test_request_follows_deepseeks_api(self, ds_key):
+        server = FakeServer(ok())
+        llm, _ = self.ds(server)
+        assert llm.complete_json(system="SYS", prompt="P", schema=SCHEMA) == {"x": 1}
+        req = server.requests[0]
+        assert req["url"] == "https://api.deepseek.com/chat/completions"
+        assert req["headers"]["Authorization"] == "Bearer sk_test_not_real"
+        body = req["body"]
+        assert body["model"] == "deepseek-flash"
+        # No json_schema support: JSON-object mode, schema and example in the prompt.
+        assert body["response_format"] == {"type": "json_object"}
+        system = body["messages"][0]["content"]
+        assert "json" in system.lower() and '{"x": 0}' in system
+        # max_tokens, never max_completion_tokens.
+        assert "max_tokens" in body and "max_completion_tokens" not in body
+        # Thinking is on by default at DeepSeek; switched off when no effort is set.
+        assert body["thinking"] == {"type": "disabled"}
+        assert "reasoning_effort" not in body
+
+    def test_effort_turns_thinking_back_on(self, ds_key):
+        server = FakeServer(ok())
+        llm, _ = self.ds(server, reasoning_effort="high")
+        llm.complete_json(system="s", prompt="p", schema=SCHEMA)
+        body = server.requests[0]["body"]
+        assert body["reasoning_effort"] == "high"
+        assert "thinking" not in body
+
+    def test_blank_json_mode_output_is_retried(self, ds_key):
+        llm, slept = self.ds(FakeServer(ok(content="   "), ok(content='{"x": 2}')))
+        assert llm.complete_json(system="s", prompt="p", schema=SCHEMA) == {"x": 2}
+        assert slept == [0.0]  # immediate retry, no backoff
+
+    def test_persistently_blank_output_rejects_the_passage(self, ds_key):
+        llm, _ = self.ds(FakeServer(*[ok(content=" ")] * 3), max_retries=2)
+        with pytest.raises(LLMOutputError, match="blank"):
+            llm.complete_json(system="s", prompt="p", schema=SCHEMA)
+
+    def test_resource_interruption_backs_off_and_retries(self, ds_key):
+        llm, slept = self.ds(FakeServer(ok(finish="insufficient_system_resource"), ok()))
+        assert llm.complete_json(system="s", prompt="p", schema=SCHEMA) == {"x": 1}
+        assert slept == [2.0]
+
+    def test_insufficient_balance_stops_with_a_clear_message(self, ds_key):
+        llm, _ = self.ds(FakeServer(err(402, "Insufficient Balance")))
+        with pytest.raises(RetraceError, match="insufficient account balance"):
+            llm.complete_json(system="s", prompt="p", schema=SCHEMA)
+
+    def test_keepalive_blank_lines_before_the_body_are_tolerated(self, ds_key):
+        status, headers, body = ok()
+        llm, _ = self.ds(FakeServer((status, headers, b"\n\n\n" + body)))
+        assert llm.complete_json(system="s", prompt="p", schema=SCHEMA) == {"x": 1}
+
+    def test_build_llm_and_cli_choice(self):
+        llm = build_llm("deepseek")
+        assert (llm.base_url, llm.api_key_env, llm.model) == (
+            "https://api.deepseek.com", "DEEPSEEK_API_KEY", "deepseek-flash")
+        from retrace.cli import PROVIDER_CHOICES
+
+        assert "deepseek" in PROVIDER_CHOICES
+
+
+def test_example_from_schema_covers_the_real_schemas():
+    from retrace.judge import JUDGE_SCHEMA
+    from retrace.llm import _example_from_schema
+    from retrace.synthesis import QUESTION_SCHEMA
+
+    assert _example_from_schema(QUESTION_SCHEMA) == {
+        "answerable": True, "question": "...", "answer": "...", "evidence": "..."}
+    assert _example_from_schema(JUDGE_SCHEMA) == {"verdict": "correct", "reason": "..."}
