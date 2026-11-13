@@ -272,3 +272,40 @@ class TestRunCommand:
                      "--out", str(tmp_path / "r.json")])
         assert code == 2
         assert "--pipeline" in capsys.readouterr().err
+
+
+class _FakeTTY(io.StringIO):
+    def isatty(self):
+        return True
+
+
+class TestColour:
+    def test_terminal_gets_colour(self, sample_run, monkeypatch):
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        buf = _FakeTTY()
+        print_summary(sample_run, buf)
+        text = buf.getvalue()
+        assert "\x1b[33mRETRIEVAL_MISS" in text  # verdict colour
+        assert "\x1b[1mVERDICTS\x1b[0m" in text
+
+    def test_no_color_is_honoured(self, sample_run, monkeypatch):
+        monkeypatch.setenv("NO_COLOR", "1")
+        buf = _FakeTTY()
+        print_summary(sample_run, buf)
+        assert "\x1b[" not in buf.getvalue()
+
+    def test_pipes_and_files_get_plain_text(self, sample_run, monkeypatch):
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        buf = io.StringIO()
+        print_summary(sample_run, buf)
+        assert "\x1b[" not in buf.getvalue()
+
+    def test_colour_does_not_break_alignment(self, sample_run, monkeypatch):
+        import re
+
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        coloured, plain = _FakeTTY(), io.StringIO()
+        print_summary(sample_run, coloured)
+        print_summary(sample_run, plain)
+        stripped = re.sub(r"\x1b\[[0-9;]*m", "", coloured.getvalue())
+        assert stripped == plain.getvalue()
