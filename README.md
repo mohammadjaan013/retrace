@@ -47,6 +47,17 @@ FIX FIRST
 
 `--report` also writes `runs/run.html`: a single self-contained file with the verdict breakdown, the ranked fix list, and the full retrieval trace for every question, with the gold evidence highlighted. It has no external requests and no web fonts, so it can be emailed as is.
 
+### What it looks like
+
+All screenshots are real output: the CLI captured from a terminal, the report rendered from an actual run.
+
+| | |
+|---|---|
+| ![retrace run](docs/images/cli-run.png) | ![HTML report](docs/images/report-overview.png) |
+| `retrace run`: verdicts, metrics and the ranked fix list | The HTML report |
+| ![retrace label](docs/images/cli-label.png) | ![A retrieval trace](docs/images/report-trace.png) |
+| `retrace label` reviewing a question generated from a NASA report | One failed question's trace, with the keyword probe's verdict |
+
 ---
 
 ## The workflow

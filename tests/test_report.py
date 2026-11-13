@@ -172,3 +172,9 @@ def test_run_with_report_flag(tmp_path, capsys):
     ])
     assert code == 0
     assert (tmp_path / "run.html").exists()
+
+
+def test_numeric_headers_align_with_their_columns(html):
+    # Found from a rendered screenshot: headers were left-aligned over
+    # right-aligned numbers, so every metrics column read as misaligned.
+    assert "th.num" in html

@@ -144,7 +144,7 @@ table{border-collapse:collapse;width:100%;font-size:13.5px}
 th,td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
 th{font:600 11px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);background:var(--sunken)}
 tr:last-child td{border-bottom:none}
-td.num{font-variant-numeric:tabular-nums;font-family:var(--mono);text-align:right;white-space:nowrap}
+td.num,th.num{font-variant-numeric:tabular-nums;font-family:var(--mono);text-align:right;white-space:nowrap}
 .metrics td:first-child{color:var(--ink-2)}
 
 .warn{border-left:3px solid var(--v-ret);background:var(--v-ret-bg);padding:10px 14px;border-radius:0 4px 4px 0;
