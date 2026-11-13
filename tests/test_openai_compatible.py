@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 
@@ -246,9 +247,17 @@ class TestBuildLLM:
         assert (llm.base_url, llm.model, llm.api_key_env) == (
             "http://localhost:11434/v1", "llama3", "OLLAMA_KEY")
 
+    @pytest.mark.skipif(importlib.util.find_spec("anthropic") is None,
+                        reason="optional Anthropic SDK not installed")
     def test_anthropic(self):
         llm = build_llm("anthropic", model="claude-sonnet-5", effort="low")
         assert isinstance(llm, AnthropicLLM) and llm.model == "claude-sonnet-5"
+
+    @pytest.mark.skipif(importlib.util.find_spec("anthropic") is not None,
+                        reason="only meaningful without the optional SDK")
+    def test_anthropic_without_sdk_says_how_to_install(self):
+        with pytest.raises(ImportError, match=r"retrace-rag\[anthropic\]"):
+            build_llm("anthropic")
 
     def test_unknown_provider(self):
         with pytest.raises(ValueError, match="unknown provider"):
