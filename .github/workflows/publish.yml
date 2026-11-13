@@ -1,0 +1,61 @@
+name: publish
+
+# Pushing a tag like v0.1.0 builds, tests and publishes that version to PyPI.
+# Uses trusted publishing (OIDC): PyPI trusts this exact repo + workflow +
+# environment, so no API token exists anywhere to leak.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Test
+        run: |
+          python -m pip install -e ".[dev]"
+          python -m ruff check .
+          python -m pytest
+      - name: Build
+        run: |
+          python -m pip install build twine
+          python -m build
+          python -m twine check --strict dist/*
+      # A PyPI version can never be re-uploaded, so refuse to publish if the
+      # tag and the version in src/retrace/__init__.py disagree.
+      - name: Tag matches package version
+        run: |
+          WHEEL="dist/retrace_rag-${GITHUB_REF_NAME#v}-py3-none-any.whl"
+          if [ ! -f "$WHEEL" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match the built version:"; ls dist; exit 1
+          fi
+      - uses: actions/upload-artifact@v5
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/retrace-rag
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
