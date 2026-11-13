@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from retrace import SAMPLE_DIR as SAMPLE
 from retrace import (
     Chunk,
     EvalCase,
@@ -24,8 +25,6 @@ from retrace.cli import main
 from retrace.metrics import compute_metrics, fix_first, percentile
 from retrace.summary import print_summary
 from retrace.text import content_terms, fold_plural
-
-SAMPLE = Path(__file__).resolve().parent.parent / "data" / "sample"
 
 
 @pytest.fixture(scope="module")
@@ -261,11 +260,27 @@ class TestRunCommand:
         with pytest.raises(SystemExit):
             main(["run", "--demo", "--fixture", "x", "--max-failure-rate", "1.5"])
 
-    def test_demo_requires_docs(self, tmp_path, capsys):
-        code = main(["run", "--demo", "--fixture", str(SAMPLE / "golden.jsonl"),
-                     "--out", str(tmp_path / "r.json")])
+    def test_bare_demo_works_from_any_directory(self, tmp_path, monkeypatch, capsys):
+        """`pip install retrace-rag && retrace run --demo` must work with no repo files."""
+        monkeypatch.chdir(tmp_path)
+        code = main(["run", "--demo", "--out", "r.json"])
+        assert code == 0
+        data = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))
+        # Same settings as the README demo: 300-char chunks, k=5.
+        assert data["verdicts"]["RETRIEVAL_MISS"] == 3
+        assert data["meta"]["k"] == 5
+
+    def test_fixture_is_required_without_demo(self, tmp_path, capsys):
+        code = main(["run", "--pipeline", "x:y", "--out", str(tmp_path / "r.json")])
         assert code == 2
-        assert "--demo needs --docs" in capsys.readouterr().err
+        assert "--fixture is required" in capsys.readouterr().err
+
+    def test_sample_data_ships_inside_the_package(self):
+        import retrace
+
+        assert retrace.SAMPLE_DIR.parent == Path(retrace.__file__).resolve().parent
+        assert (retrace.SAMPLE_DIR / "documents.json").is_file()
+        assert (retrace.SAMPLE_DIR / "golden.jsonl").is_file()
 
     def test_needs_a_target(self, tmp_path, capsys):
         code = main(["run", "--fixture", str(SAMPLE / "golden.jsonl"),

@@ -1,23 +1,30 @@
 [build-system]
-requires = ["hatchling"]
+# hatch-fancy-pypi-readme is build-time only: it rewrites the README's relative
+# image links to absolute ones so screenshots render on PyPI. It is never
+# installed for users.
+requires = ["hatchling", "hatch-fancy-pypi-readme"]
 build-backend = "hatchling.build"
 
 [project]
 name = "retrace-rag"
-version = "0.1.0.dev0"
+dynamic = ["version", "readme"]
 description = "Find out which stage of your RAG pipeline is actually broken."
-readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-keywords = ["rag", "retrieval", "evaluation", "llm", "diagnostics"]
+authors = [{ name = "Mohammad Jaan" }]
+keywords = ["rag", "retrieval", "evaluation", "llm", "diagnostics", "golden-set"]
 classifiers = [
   "Development Status :: 3 - Alpha",
+  "Environment :: Console",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Software Development :: Testing",
 ]
 
 # The core has NO required dependencies. This is deliberate and load-bearing:
@@ -26,7 +33,6 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-pdf = ["pypdf>=5.0"]
 anthropic = ["anthropic>=1.0"]
 dense = ["sentence-transformers>=3.0"]
 dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.6"]
@@ -36,9 +42,38 @@ retrace = "retrace.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/mohammadjaan013/retrace"
+Source = "https://github.com/mohammadjaan013/retrace"
+Issues = "https://github.com/mohammadjaan013/retrace/issues"
+
+[tool.hatch.version]
+path = "src/retrace/__init__.py"
+
+[tool.hatch.metadata.hooks.fancy-pypi-readme]
+content-type = "text/markdown"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
+path = "README.md"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+# Relative image paths work on GitHub but not on PyPI.
+pattern = '\]\((docs/[^)]+)\)'
+replacement = '](https://raw.githubusercontent.com/mohammadjaan013/retrace/main/\1)'
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/retrace"]
+
+[tool.hatch.build.targets.sdist]
+# An explicit allowlist, not "everything not gitignored": nothing unexpected
+# (a local .env with API keys, run files, a downloaded corpus) can ever ship.
+include = [
+  "src/retrace",
+  "tests",
+  "examples",
+  "docs/images",
+  "README.md",
+  "LICENSE",
+  "pyproject.toml",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

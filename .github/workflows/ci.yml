@@ -28,8 +28,9 @@ jobs:
         run: python -m ruff check .
       - name: Test
         run: python -m pytest --cov=retrace --cov-report=term
-      # The core promises zero runtime dependencies. Prove it on every push:
-      # a clean install with no extras must import and run the demo.
+      # The core promises zero runtime dependencies, and the demo must work
+      # straight after `pip install`. Prove both on every push: a clean,
+      # non-editable install with no extras, run from outside the repository.
       - name: Zero-dependency smoke test
         shell: bash
         run: |
@@ -37,5 +38,4 @@ jobs:
           if [ -f /tmp/bare/bin/python ]; then PY=/tmp/bare/bin/python; else PY=/tmp/bare/Scripts/python; fi
           $PY -m pip install --no-deps .
           $PY -c "import retrace, sys; print('retrace', retrace.__version__)"
-          $PY -m retrace.cli run --demo --docs data/sample/documents.json \
-              --fixture data/sample/golden.jsonl --chunk-size 300 --k 5 --out /tmp/run.json
+          cd /tmp && $PY -m retrace.cli run --demo --out /tmp/run.json

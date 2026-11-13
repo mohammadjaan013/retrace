@@ -1,8 +1,8 @@
-"""Regenerate `data/sample/golden.jsonl`.
+"""Regenerate `src/retrace/sample_data/golden.jsonl`.
 
 Spans are located by searching for an anchor string rather than being typed by
 hand, so the fixture stays correct when a sample document is edited. Run this
-after changing `data/sample/documents.json`.
+after changing `src/retrace/sample_data/documents.json`.
 
     python examples/build_sample_golden.py
 """
@@ -10,11 +10,10 @@ after changing `data/sample/documents.json`.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
-from retrace import EvalCase, Provenance, Span, fixture_stats, write_fixture
+from retrace import SAMPLE_DIR, EvalCase, Provenance, Span, fixture_stats, write_fixture
 
-DATA = Path(__file__).resolve().parent.parent / "data" / "sample"
+DATA = SAMPLE_DIR
 
 # (case_id, question, answer, doc_id, anchor, labels)
 #

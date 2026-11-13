@@ -6,7 +6,9 @@ Retrace tells you which questions failed, why, and what to fix first.
 
 from __future__ import annotations
 
-__version__ = "0.1.0.dev0"
+from pathlib import Path as _Path
+
+__version__ = "0.1.0"
 
 from .attribution import Attribution, attribute
 from .baseline import NaiveRetriever, tokenize
@@ -67,9 +69,14 @@ from .types import (
     stable_id,
 )
 
+SAMPLE_DIR = _Path(__file__).resolve().parent / "sample_data"
+"""A 4-document sample corpus and a 12-question golden set, shipped with the
+package so `retrace run --demo` works straight after `pip install`."""
+
 __all__ = [
     "FIXTURE_SCHEMA_VERSION",
     "LLM",
+    "SAMPLE_DIR",
     "AnswerJudge",
     "AnthropicLLM",
     "Attribution",

@@ -21,12 +21,11 @@ Most RAG evaluation tools compute a score. Retrace answers the question the scor
 No API key, no downloads, no dependencies:
 
 ```bash
-git clone https://github.com/mohammadjaan013/retrace.git
-cd retrace
-pip install -e .
-retrace run --demo --docs data/sample/documents.json \
-    --fixture data/sample/golden.jsonl --chunk-size 300 --k 5 --report
+pip install retrace-rag
+retrace run --demo --report
 ```
+
+The demo uses a small sample corpus and test set that ship inside the package.
 
 ```
 VERDICTS  12 cases (12 trusted)
@@ -128,8 +127,20 @@ write_report(run, "report.html")
 
 Retrace needs a model for two optional jobs: writing candidate questions, and judging answers for `GENERATION_MISS`. The core defines a one-method protocol and depends on no provider.
 
-- **Anthropic**: `pip install "retrace-rag[anthropic]"`. `synth` uses `claude-opus-5` by default, with structured JSON output and server-side refusal fallback. Pass `--model` and `--effort` to trade cost for quality. Synthesis is a bulk job, so measure `--effort low` on your own corpus first.
-- **Anything else** (Groq, OpenAI, Gemini, a local model): write a function `(system, prompt, schema) -> dict` and pass `--llm my_module:my_function`.
+Choose one with `--provider`. Keys are read from the environment, or from a `.env` file in the directory you run from, and are never printed.
+
+| `--provider` | Key | Default model | Status |
+|---|---|---|---|
+| `groq` | `GROQ_API_KEY` | `openai/gpt-oss-120b` | Tested live; works on the free tier |
+| `deepseek` | `DEEPSEEK_API_KEY` | `deepseek-flash` | Built from DeepSeek's docs; not yet tested live |
+| `anthropic` | `ANTHROPIC_API_KEY` | `claude-opus-5` | Needs `pip install "retrace-rag[anthropic]"`; not yet tested live |
+| `openai-compatible` | `--api-key-env` | `--model` | Any endpoint speaking the OpenAI protocol (OpenAI, Ollama, vLLM); untested |
+
+```bash
+retrace synth --docs docs.jsonl --out candidates.jsonl --n 60 --provider groq --effort low
+```
+
+Rate limits are waited out automatically, a passage the model fails on is skipped rather than stopping the run, and a stopped run keeps every question already written. For anything else, write a function `(system, prompt, schema) -> dict` and pass `--llm my_module:my_function`.
 
 Answer judging defaults to a free token-recall judge, which is instant but blind to negation and paraphrase. Use `--judge llm` before putting a `GENERATION_MISS` number in front of anyone.
 
@@ -197,8 +208,10 @@ Exits `3` when the failure rate exceeds the threshold, and `2` on a usage or set
 ## Development
 
 ```bash
+git clone https://github.com/mohammadjaan013/retrace.git
+cd retrace
 pip install -e ".[dev]"
-python -m pytest            # 310 tests
+python -m pytest
 python -m ruff check .
 python examples/before_after.py
 ```

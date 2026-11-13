@@ -257,7 +257,7 @@ def _resolve_target(args: argparse.Namespace) -> tuple[Any, Any]:
         )
 
     if args.demo:
-        if corpus is None:
+        if corpus is None:  # pragma: no cover - _apply_demo_defaults always supplies docs
             raise RetraceError("--demo needs --docs: the naive baseline indexes those documents")
         from .baseline import NaiveRetriever
 
@@ -288,11 +288,34 @@ def _build_judge(args: argparse.Namespace):
     return TokenRecallJudge()
 
 
+def _apply_demo_defaults(args: argparse.Namespace) -> None:
+    """Fill run options left unset.
+
+    `--demo` with nothing else runs the bundled sample at the settings the
+    README shows (300-character chunks, k=5), so `pip install retrace-rag &&
+    retrace run --demo` works from any directory. Anything passed explicitly
+    wins; without --demo the general defaults apply (1200 chars, k=10).
+    """
+    from . import SAMPLE_DIR
+
+    if args.demo:
+        args.docs = args.docs or str(SAMPLE_DIR / "documents.json")
+        args.fixture = args.fixture or str(SAMPLE_DIR / "golden.jsonl")
+        args.chunk_size = args.chunk_size or 300
+        args.k = args.k or 5
+    else:
+        if not args.fixture:
+            raise RetraceError("--fixture is required (or use --demo for the bundled sample)")
+        args.chunk_size = args.chunk_size or 1200
+        args.k = args.k or 10
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     from .fixtures import read_fixture
     from .runner import evaluate, save_run
     from .summary import print_summary
 
+    _apply_demo_defaults(args)
     cases = read_fixture(args.fixture)
     pipeline, corpus = _resolve_target(args)
     judge = _build_judge(args)
@@ -379,7 +402,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_stats)
 
     p = sub.add_parser("run", help="attribute every failure in a golden set to a pipeline stage")
-    p.add_argument("--fixture", required=True, help="golden set (.jsonl)")
+    p.add_argument("--fixture", help="golden set (.jsonl); --demo defaults to the bundled sample")
     target = p.add_mutually_exclusive_group()
     target.add_argument("--pipeline", help="'module:attr' or 'module:factory()' returning a "
                                            "pipeline, a retriever, or (pipeline, corpus)")
@@ -387,9 +410,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="diagnose the built-in naive baseline over --docs")
     p.add_argument("--docs", help="the indexed documents, enabling CORPUS_GAP detection")
     p.add_argument("--corpus", help="'module:attr' resolving to a Corpus (overrides --docs)")
-    p.add_argument("--chunk-size", type=int, default=1200,
-                   help="chunk size used to index --docs (default 1200)")
-    p.add_argument("--k", type=int, default=10, help="top-k for retrieve-only pipelines")
+    p.add_argument("--chunk-size", type=int, default=None,
+                   help="chunk size used to index --docs (default 1200; 300 with --demo)")
+    p.add_argument("--k", type=int, default=None,
+                   help="top-k for retrieve-only pipelines (default 10; 5 with --demo)")
     p.add_argument("--judge", choices=["recall", "llm", "none"], default="recall",
                    help="answer judge for GENERATION_MISS (default: free token-recall)")
     p.add_argument("--judge-provider", choices=PROVIDER_CHOICES, default="anthropic",

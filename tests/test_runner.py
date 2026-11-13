@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
+from retrace import SAMPLE_DIR as SAMPLE
 from retrace import (
     Chunk,
     EvalCase,
@@ -28,8 +28,6 @@ from retrace.runner import (
     run_to_dict,
     save_run,
 )
-
-SAMPLE = Path(__file__).resolve().parent.parent / "data" / "sample"
 
 
 @pytest.fixture(scope="module")

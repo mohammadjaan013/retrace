@@ -13,9 +13,9 @@ That split is already the most useful thing most teams have never measured.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from retrace import (
+    SAMPLE_DIR,
     InMemoryCorpus,
     NaiveRetriever,
     RetrieverPipeline,
@@ -26,7 +26,7 @@ from retrace import (
     resolve_gold_chunks,
 )
 
-DATA = Path(__file__).resolve().parent.parent / "data" / "sample"
+DATA = SAMPLE_DIR
 K = 5
 CHUNK_CHARS = 300
 

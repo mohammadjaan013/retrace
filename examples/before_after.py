@@ -44,6 +44,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from retrace import (
+    SAMPLE_DIR,
     NaiveRetriever,
     Verdict,
     build_corpus,
@@ -58,7 +59,7 @@ from retrace.report import write_report
 from retrace.retrievers import BM25Retriever
 
 ROOT = Path(__file__).resolve().parent.parent
-DATA = ROOT / "data" / "sample"
+DATA = SAMPLE_DIR
 RUNS = ROOT / "runs"
 K = 5
 
